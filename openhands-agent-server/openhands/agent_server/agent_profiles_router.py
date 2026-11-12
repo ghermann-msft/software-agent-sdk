@@ -13,6 +13,7 @@ dangling refs — those appear in the body).
 """
 
 import asyncio
+import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -71,6 +72,7 @@ logger = get_logger(__name__)
 agent_profiles_router = APIRouter(prefix="/agent-profiles", tags=["Agent Profiles"])
 
 MAX_AGENT_PROFILES = 50
+_AZURE_WORKLOAD_IDENTITY_AUTH = "azure_workload_identity"
 
 ProfileName = Annotated[
     str,
@@ -145,11 +147,17 @@ def _llm_has_real_config(llm: LLM) -> bool:
         return True
     if llm.is_subscription or llm.auth_type == "subscription":
         return True
-    if llm.auth_type == "azure_workload_identity":
+    if llm.auth_type == _AZURE_WORKLOAD_IDENTITY_AUTH:
         return True
     if llm.base_url and llm.base_url.strip():
         return True
     return False
+
+
+def _deployment_workload_identity_llm() -> LLM | None:
+    if os.getenv("LLM_AUTH_TYPE") != _AZURE_WORKLOAD_IDENTITY_AUTH:
+        return None
+    return LLM.load_from_env()
 
 
 def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
@@ -185,7 +193,21 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     llm_store = get_llm_profile_store()
     with store_errors():
         try:
-            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            existing = llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            deployment_llm = _deployment_workload_identity_llm()
+            if (
+                existing.auth_type == _AZURE_WORKLOAD_IDENTITY_AUTH
+                and deployment_llm is not None
+                and existing.model_dump() != deployment_llm.model_dump()
+            ):
+                llm_store.save(
+                    SEED_PROFILE_NAME,
+                    deployment_llm,
+                    include_secrets=True,
+                    cipher=cipher,
+                    max_profiles=MAX_PROFILES,
+                )
+                logger.info(f"Refreshed deployment LLM profile '{SEED_PROFILE_NAME}'")
             return SEED_PROFILE_NAME
         except FileNotFoundError:
             pass
@@ -231,20 +253,30 @@ def _ensure_default_llm_profile(
 ) -> PersistedSettings:
     """Materialize and activate the default LLM profile when settings are real."""
     settings = settings_store.load() or PersistedSettings()
-    if settings.active_profile or settings.agent_settings.agent_kind == "acp":
+    if settings.agent_settings.agent_kind == "acp":
+        return settings
+    if settings.active_profile and canonical_profile_name(
+        settings.active_profile
+    ) != canonical_profile_name(SEED_PROFILE_NAME):
         return settings
 
     _seed_default_llm_profile(settings.agent_settings.llm, cipher)
     llm_store = get_llm_profile_store()
     try:
         with store_errors():
-            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            default_llm = llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
     except (FileNotFoundError, ValueError):
         return settings
 
     def activate_default(s: PersistedSettings) -> PersistedSettings:
         if not s.active_profile and s.agent_settings.agent_kind != "acp":
             s.active_profile = SEED_PROFILE_NAME
+        if (
+            s.agent_settings.agent_kind != "acp"
+            and default_llm.auth_type == _AZURE_WORKLOAD_IDENTITY_AUTH
+            and os.getenv("LLM_AUTH_TYPE") == _AZURE_WORKLOAD_IDENTITY_AUTH
+        ):
+            s.agent_settings = s.agent_settings.model_copy(update={"llm": default_llm})
         return s
 
     settings = settings_store.update(activate_default)

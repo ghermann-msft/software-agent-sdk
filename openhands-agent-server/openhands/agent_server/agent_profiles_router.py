@@ -31,6 +31,7 @@ from openhands.agent_server.launch import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
+    SettingsStore,
     get_agent_profile_store,
     get_llm_profile_store,
     get_settings_store,
@@ -144,6 +145,8 @@ def _llm_has_real_config(llm: LLM) -> bool:
         return True
     if llm.is_subscription or llm.auth_type == "subscription":
         return True
+    if llm.auth_type == "azure_workload_identity":
+        return True
     if llm.base_url and llm.base_url.strip():
         return True
     return False
@@ -223,6 +226,32 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     return SEED_PROFILE_NAME
 
 
+def _ensure_default_llm_profile(
+    settings_store: SettingsStore, cipher: Cipher | None
+) -> PersistedSettings:
+    """Materialize and activate the default LLM profile when settings are real."""
+    settings = settings_store.load() or PersistedSettings()
+    if settings.active_profile or settings.agent_settings.agent_kind == "acp":
+        return settings
+
+    _seed_default_llm_profile(settings.agent_settings.llm, cipher)
+    llm_store = get_llm_profile_store()
+    try:
+        with store_errors():
+            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+    except (FileNotFoundError, ValueError):
+        return settings
+
+    def activate_default(s: PersistedSettings) -> PersistedSettings:
+        if not s.active_profile and s.agent_settings.agent_kind != "acp":
+            s.active_profile = SEED_PROFILE_NAME
+        return s
+
+    settings = settings_store.update(activate_default)
+    logger.info(f"Activated default LLM profile '{SEED_PROFILE_NAME}'")
+    return settings
+
+
 def _ensure_active_profile(
     store: AgentProfileStore, config: Config, cipher: Cipher | None
 ) -> None:
@@ -236,7 +265,7 @@ def _ensure_active_profile(
     """
     settings_store = get_settings_store(config)
     with store_errors(), store.lock():
-        settings = settings_store.load() or PersistedSettings()
+        settings = _ensure_default_llm_profile(settings_store, cipher)
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return

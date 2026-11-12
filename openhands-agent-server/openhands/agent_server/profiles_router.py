@@ -164,7 +164,11 @@ def list_profiles(request: Request) -> ProfileListResponse:
     """
     config = get_config(request)
     settings_store = get_settings_store(config)
-    settings = settings_store.load() or PersistedSettings()
+    from openhands.agent_server.agent_profiles_router import (
+        _ensure_default_llm_profile,
+    )
+
+    settings = _ensure_default_llm_profile(settings_store, get_cipher(request))
 
     store = get_llm_profile_store()
     with store_errors():

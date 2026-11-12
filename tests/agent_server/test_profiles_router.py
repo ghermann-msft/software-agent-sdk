@@ -218,6 +218,44 @@ def test_list_profiles_empty(client):
     assert body["profiles"] == []
 
 
+def test_list_profiles_seeds_and_activates_deployment_default(client, monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "azure/gpt-5.6-sol")
+    monkeypatch.setenv(
+        "LLM_BASE_URL",
+        "https://mortmain-openai2.openai.azure.com",
+    )
+    monkeypatch.setenv("LLM_API_VERSION", "2024-12-01-preview")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "azure_workload_identity")
+
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_profile"] == "default"
+    assert len(body["profiles"]) == 1
+    assert body["profiles"][0]["name"] == "default"
+    assert body["profiles"][0]["model"] == "azure/gpt-5.6-sol"
+    assert body["profiles"][0]["base_url"] == (
+        "https://mortmain-openai2.openai.azure.com"
+    )
+
+
+def test_list_profiles_preserves_active_user_profile(client, store, monkeypatch):
+    store.save("mine", LLM(model="anthropic/claude-sonnet-4-5"))
+    assert client.post("/api/profiles/mine/activate").status_code == 200
+    monkeypatch.setenv("LLM_MODEL", "azure/gpt-5.6-sol")
+    monkeypatch.setenv(
+        "LLM_BASE_URL",
+        "https://mortmain-openai2.openai.azure.com",
+    )
+    monkeypatch.setenv("LLM_AUTH_TYPE", "azure_workload_identity")
+
+    body = client.get("/api/profiles").json()
+
+    assert body["active_profile"] == "mine"
+    assert [profile["name"] for profile in body["profiles"]] == ["mine"]
+
+
 def test_list_profiles_returns_saved_profiles(client, store):
     """GET /api/profiles returns all saved profiles with model info."""
     # Save some profiles directly via store

@@ -105,6 +105,31 @@ def test_seed_is_idempotent(client):
     assert second["active_agent_profile_id"] == first["active_agent_profile_id"]
 
 
+def test_existing_default_agent_profile_repairs_deployment_llm_profile(
+    client, default_llm_profile_store, monkeypatch
+):
+    first = client.get("/api/agent-profiles").json()
+    assert default_llm_profile_store.list() == []
+
+    monkeypatch.setenv("LLM_MODEL", "azure/gpt-5.6-sol")
+    monkeypatch.setenv(
+        "LLM_BASE_URL",
+        "https://mortmain-openai2.openai.azure.com",
+    )
+    monkeypatch.setenv("LLM_API_VERSION", "2024-12-01-preview")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "azure_workload_identity")
+
+    second = client.get("/api/agent-profiles").json()
+
+    assert second["active_agent_profile_id"] == first["active_agent_profile_id"]
+    assert default_llm_profile_store.list() == ["default.json"]
+    llm = default_llm_profile_store.load("default")
+    assert llm.model == "azure/gpt-5.6-sol"
+    assert llm.auth_type == "azure_workload_identity"
+    settings = client.get("/api/settings").json()
+    assert settings["active_profile"] == "default"
+
+
 def test_seed_references_active_llm_profile(client, default_llm_profile_store):
     """The seed references the active LLM profile when one is set."""
     default_llm_profile_store.save("my-llm", LLM(model="gpt-4o-mini"))
@@ -312,6 +337,13 @@ def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_stor
         (LLM(model="gpt-5.5", base_url="https://proxy.example/v1"), True),
         # Subscription auth counts even without an api_key.
         (LLM(model="gpt-5.5", auth_type="subscription"), True),
+        (
+            LLM(
+                model="azure/deployment",
+                auth_type="azure_workload_identity",
+            ),
+            True,
+        ),
     ],
 )
 def test_llm_has_real_config(llm, expected):

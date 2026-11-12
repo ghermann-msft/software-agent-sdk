@@ -7,6 +7,7 @@ for the Cloud API's settings/secrets endpoints.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from typing import Any, TypedDict
@@ -23,6 +24,7 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
@@ -145,6 +147,39 @@ def _deep_merge(
 
 
 PERSISTED_SETTINGS_SCHEMA_VERSION = 7
+_DEPLOYMENT_LLM_ENV_VARS = (
+    "LLM_MODEL",
+    "LLM_BASE_URL",
+    "LLM_API_VERSION",
+    "LLM_AUTH_TYPE",
+)
+
+
+def _deployment_default_llm() -> LLM | None:
+    if not any(name in os.environ for name in _DEPLOYMENT_LLM_ENV_VARS):
+        return None
+    return LLM.load_from_env()
+
+
+def _default_server_agent_settings() -> OpenHandsAgentSettings:
+    settings = default_agent_settings()
+    llm = _deployment_default_llm()
+    if llm is None:
+        return settings
+    return settings.model_copy(update={"llm": llm})
+
+
+def _apply_deployment_llm_default(
+    settings: AgentSettingsConfig,
+) -> AgentSettingsConfig:
+    if not isinstance(settings, OpenHandsAgentSettings):
+        return settings
+    llm = _deployment_default_llm()
+    if llm is None:
+        return settings
+    if settings.llm.model_dump() != default_agent_settings().llm.model_dump():
+        return settings
+    return settings.model_copy(update={"llm": llm})
 
 
 class PersistedSettings(BaseModel):
@@ -176,7 +211,9 @@ class PersistedSettings(BaseModel):
         description="Persisted settings file schema version.",
     )
 
-    agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
+    agent_settings: AgentSettingsConfig = Field(
+        default_factory=_default_server_agent_settings
+    )
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
@@ -470,10 +507,12 @@ class PersistedSettings(BaseModel):
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
             coerced = _coerce_dict_secrets(agent_settings)
-            data["agent_settings"] = validate_agent_settings(
-                coerced,
-                context=info.context,
-                persisted=True,
+            data["agent_settings"] = _apply_deployment_llm_default(
+                validate_agent_settings(
+                    coerced,
+                    context=info.context,
+                    persisted=True,
+                )
             )
 
         # Apply migrations for conversation_settings

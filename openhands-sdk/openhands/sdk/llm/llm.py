@@ -27,6 +27,7 @@ from typing import (
     get_origin,
 )
 
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -187,6 +188,8 @@ LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     LLMNoResponseError,
 )
 
+AZURE_OPENAI_SCOPE: Final[str] = "https://cognitiveservices.azure.com/.default"
+
 # Minimum context window size required for OpenHands to function properly.
 # Based on typical usage: system prompt (~2k) + conversation history (~4k)
 # + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
@@ -304,7 +307,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ),
         json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
-    auth_type: Literal["api_key", "subscription"] = Field(
+    auth_type: Literal["api_key", "subscription", "azure_workload_identity"] = Field(
         default="api_key",
         description="Authentication mode for the LLM.",
         json_schema_extra=field_meta(
@@ -687,6 +690,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _is_subscription: bool = PrivateAttr(default=False)
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
+    _azure_ad_token_provider: Callable[[], str] | None = PrivateAttr(default=None)
     _provider_info: LLMProvider | None = PrivateAttr(default=None)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
@@ -755,6 +759,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not model_val:
             raise ValueError("model must be specified in LLM")
 
+        if d.get("auth_type") == "azure_workload_identity" and d.get("is_subscription"):
+            raise ValueError(
+                "Azure workload identity cannot be combined with subscription "
+                "authentication"
+            )
+
         if "stream_idle_timeout" not in d:
             d["stream_idle_timeout"] = d.get("timeout", 300)
 
@@ -780,6 +790,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # AWS credentials flow per-call through ``_aws_kwargs()`` and the
         # OpenRouter ``HTTP-Referer`` / ``X-Title`` headers flow per-call
         # through ``_openrouter_headers()``.
+        if self.auth_type == "azure_workload_identity":
+            if not self.model.startswith("azure/"):
+                raise ValueError(
+                    "Azure workload identity requires an Azure model profile "
+                    "using 'azure/<deployment>'"
+                )
+            if self.api_key is not None:
+                raise ValueError(
+                    "Azure workload identity cannot be combined with an API key"
+                )
+            if self.provider_connection_id is not None:
+                raise ValueError(
+                    "Azure workload identity cannot be combined with a provider "
+                    "connection"
+                )
+            if self.subscription_vendor is not None:
+                raise ValueError(
+                    "Azure workload identity cannot be combined with subscription "
+                    "authentication"
+                )
 
         # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
         # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
@@ -1270,6 +1300,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     **subscription_headers,
                 },
             }
+        azure_auth_kwargs = self._azure_workload_identity_kwargs()
+        if azure_auth_kwargs:
+            final_kwargs = {
+                key: value
+                for key, value in final_kwargs.items()
+                if key not in {"api_key", "azure_ad_token", "azure_ad_token_provider"}
+            }
         return {
             **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
             "input": typed_input,
@@ -1282,6 +1319,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "seed": self.seed,
             **self._aws_kwargs(),
             **final_kwargs,
+            **azure_auth_kwargs,
         }
 
     def _process_stream_event(
@@ -2428,6 +2466,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return api_key_value
         return provider_info.api_key_for_litellm(api_key_value)
 
+    def _azure_workload_identity_kwargs(self) -> dict[str, Callable[[], str]]:
+        if self.auth_type != "azure_workload_identity":
+            return {}
+        if self._azure_ad_token_provider is None:
+            credential = DefaultAzureCredential()
+            self._azure_ad_token_provider = get_bearer_token_provider(
+                credential, AZURE_OPENAI_SCOPE
+            )
+        return {"azure_ad_token_provider": self._azure_ad_token_provider}
+
     def _get_litellm_auth_values(self) -> tuple[str | None, dict[str, str]]:
         api_key_value: str | None = None
         extra_headers: dict[str, str] = {}
@@ -2508,6 +2556,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 **(kwargs.get("extra_headers") or {}),
                 **subscription_headers,
             }
+        azure_auth_kwargs = self._azure_workload_identity_kwargs()
+        if azure_auth_kwargs:
+            kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if key not in {"api_key", "azure_ad_token", "azure_ad_token_provider"}
+            }
         return {
             **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
             "api_base": provider_info.api_base,
@@ -2520,6 +2575,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "max_retries": 0,
             **self._aws_kwargs(),
             **kwargs,
+            **azure_auth_kwargs,
         }
 
     def _transport_call(

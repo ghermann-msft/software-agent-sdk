@@ -218,6 +218,30 @@ class TestStartConversationRequestValidation:
         assert req.agent is None
         assert req.agent_settings is not None
 
+    def test_agent_settings_accept_azure_workload_identity(self):
+        req = StartConversationRequest.model_validate(
+            {
+                "agent_settings": {
+                    "agent_kind": "openhands",
+                    "llm": {
+                        "model": "azure/gpt-5.6-sol",
+                        "base_url": "https://mortmain-openai2.openai.azure.com/",
+                        "api_version": "2025-03-01-preview",
+                        "auth_type": "azure_workload_identity",
+                    },
+                },
+                "workspace": {
+                    "kind": "LocalWorkspace",
+                    "working_dir": "/tmp",
+                },
+            }
+        )
+
+        assert req.agent is None
+        assert req.agent_settings is not None
+        assert req.agent_settings["llm"]["auth_type"] == "azure_workload_identity"
+        assert "api_key" not in req.agent_settings["llm"]
+
     def test_invalid_agent_settings_are_rejected_early(self):
         with pytest.raises(ValidationError):
             StartConversationRequest(

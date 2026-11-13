@@ -115,6 +115,31 @@ def test_workload_identity_injected_into_responses_calls(
     mock_get_provider.assert_called_once()
 
 
+@patch("openhands.sdk.llm.llm.get_bearer_token_provider")
+@patch("openhands.sdk.llm.llm.DefaultAzureCredential")
+def test_workload_identity_provider_creation_failure_is_not_cached(
+    mock_credential_class: Mock,
+    mock_get_provider: Mock,
+) -> None:
+    error = RuntimeError("workload identity unavailable")
+    token_provider = Mock(return_value="token")
+    mock_get_provider.side_effect = [error, token_provider]
+    llm = LLM(
+        model="azure/deployment",
+        auth_type="azure_workload_identity",
+    )
+
+    with pytest.raises(RuntimeError, match="workload identity unavailable"):
+        llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    kwargs = llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert kwargs["azure_ad_token_provider"] is token_provider
+    assert "api_key" not in kwargs
+    assert mock_credential_class.call_count == 2
+    assert mock_get_provider.call_count == 2
+
+
 @patch("openhands.sdk.llm.llm.DefaultAzureCredential")
 def test_api_key_auth_is_unchanged(mock_credential_class: Mock) -> None:
     llm = LLM(model="azure/deployment", api_key="api-key")
@@ -167,3 +192,22 @@ def test_workload_identity_persistence_round_trip() -> None:
     assert restored.auth_type == "azure_workload_identity"
     assert restored.base_url == llm.base_url
     assert restored.api_key is None
+
+
+def test_workload_identity_json_schema_and_serialized_validation() -> None:
+    auth_schema = LLM.model_json_schema()["properties"]["auth_type"]
+    assert "azure_workload_identity" in auth_schema["enum"]
+
+    llm = LLM.model_validate_json(
+        """
+        {
+          "model": "azure/gpt-5.6-sol",
+          "base_url": "https://mortmain-openai2.openai.azure.com/",
+          "api_version": "2025-03-01-preview",
+          "auth_type": "azure_workload_identity"
+        }
+        """
+    )
+
+    assert llm.auth_type == "azure_workload_identity"
+    assert llm.api_key is None

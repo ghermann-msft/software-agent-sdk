@@ -77,6 +77,7 @@ from openhands.agent_server.init_router import (
     init_router,
     require_initialized,
 )
+from openhands.agent_server.integrations_router import atlassian_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.local_secret_resolver import local_secret_resolution
 from openhands.agent_server.mcp_router import mcp_router
@@ -668,6 +669,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(mcp_router)
     api_router.include_router(experimental_features_router)
     api_router.include_router(settings_router)
+    api_router.include_router(atlassian_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)

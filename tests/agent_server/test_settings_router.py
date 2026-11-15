@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from deprecation import DeprecatedWarning
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -1104,6 +1105,136 @@ def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_sett
     )
     assert cleared_auth.status_code == 200, cleared_auth.text
     assert "auth" not in cleared_auth.json()["agent_settings"]["mcp_config"]["github"]
+
+
+def test_atlassian_integration_persists_encrypted_authenticated_mcp_tools(
+    client_with_settings,
+    temp_persistence_dir,
+    config_with_settings,
+    monkeypatch,
+):
+    async def validate_atlassian(_integration, _product):
+        return None
+
+    monkeypatch.setattr(
+        "openhands.agent_server.integrations_router._validate_atlassian_cloud",
+        validate_atlassian,
+    )
+    response = client_with_settings.put(
+        "/api/v1/integrations/atlassian/jira",
+        json={
+            "site_url": "https://example.atlassian.net/wiki",
+            "email": "user@example.com",
+            "api_token": "atlassian-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "jira": {
+            "connected": True,
+            "site_url": "https://example.atlassian.net",
+            "email": "user@example.com",
+        },
+        "confluence": {
+            "connected": False,
+            "site_url": None,
+            "email": None,
+        },
+    }
+    assert (
+        "atlassian-secret" not in (temp_persistence_dir / "settings.json").read_text()
+    )
+
+    persisted = FileSettingsStore(
+        persistence_dir=temp_persistence_dir,
+        cipher=Cipher(config_with_settings.secret_key.get_secret_value()),
+    ).load()
+    assert persisted is not None
+    server = persisted.agent_settings.mcp_config["openhands-atlassian-jira"]
+    assert server.command == "uvx"
+    assert server.args == [
+        "--from",
+        "mcp-atlassian==0.23.1",
+        "mcp-atlassian",
+    ]
+    assert server.env is not None
+    assert {name: value.get_secret_value() for name, value in server.env.items()} == {
+        "JIRA_URL": "https://example.atlassian.net",
+        "JIRA_USERNAME": "user@example.com",
+        "JIRA_API_TOKEN": "atlassian-secret",
+    }
+    agent = persisted.agent_settings.create_agent()
+    assert agent.mcp_config["openhands-atlassian-jira"] == server
+
+    confluence_response = client_with_settings.put(
+        "/api/v1/integrations/atlassian/confluence",
+        json={
+            "site_url": "https://example.atlassian.net",
+            "email": "docs@example.com",
+            "api_token": "confluence-secret",
+        },
+    )
+    assert confluence_response.status_code == 200
+    assert confluence_response.json()["jira"]["connected"] is True
+    assert confluence_response.json()["confluence"] == {
+        "connected": True,
+        "site_url": "https://example.atlassian.net",
+        "email": "docs@example.com",
+    }
+
+    get_response = client_with_settings.get("/api/v1/integrations/atlassian")
+    assert get_response.status_code == 200
+    assert get_response.json() == confluence_response.json()
+    assert "api_token" not in get_response.json()
+
+    delete_response = client_with_settings.delete("/api/v1/integrations/atlassian/jira")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["jira"]["connected"] is False
+    assert delete_response.json()["confluence"]["connected"] is True
+    assert (
+        "openhands-atlassian-jira"
+        not in client_with_settings.get("/api/settings").json()["agent_settings"][
+            "mcp_config"
+        ]
+    )
+    assert (
+        "openhands-atlassian-confluence"
+        in client_with_settings.get("/api/settings").json()["agent_settings"][
+            "mcp_config"
+        ]
+    )
+
+
+def test_atlassian_integration_rejects_credentials_before_persisting(
+    client_with_settings,
+    monkeypatch,
+):
+    async def reject_atlassian(_integration, _product):
+        raise HTTPException(
+            status_code=401, detail="Atlassian credentials were rejected"
+        )
+
+    monkeypatch.setattr(
+        "openhands.agent_server.integrations_router._validate_atlassian_cloud",
+        reject_atlassian,
+    )
+    response = client_with_settings.put(
+        "/api/v1/integrations/atlassian/jira",
+        json={
+            "site_url": "https://example.atlassian.net",
+            "email": "user@example.com",
+            "api_token": "invalid-secret",
+        },
+    )
+
+    assert response.status_code == 401
+    assert (
+        "openhands-atlassian-jira"
+        not in client_with_settings.get("/api/settings").json()["agent_settings"][
+            "mcp_config"
+        ]
+    )
 
 
 def test_mcp_server_patch_toggles_enabled_without_dropping_config(

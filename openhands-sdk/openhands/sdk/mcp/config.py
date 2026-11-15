@@ -6,6 +6,7 @@ import base64
 import copy
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, cast
+from urllib.parse import urlparse
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
@@ -38,6 +39,8 @@ from openhands.sdk.utils.pydantic_secrets import (
 
 
 logger = get_logger(__name__)
+
+AZURE_AI_SCOPE = "https://ai.azure.com/.default"
 
 
 def _validate_optional_secret(
@@ -234,6 +237,14 @@ class MCPHeaderAuthCredential(_MCPBaseModel):
 
     def to_http_headers(self) -> dict[str, str] | None:
         return {name: value.get_secret_value() for name, value in self.headers.items()}
+
+
+class MCPAzureWorkloadIdentityAuthCredential(_MCPBaseModel):
+    strategy: Literal["azure_workload_identity"]
+    scope: str = Field(default=AZURE_AI_SCOPE, min_length=1)
+
+    def to_http_headers(self) -> dict[str, str] | None:
+        return None
 
 
 class MCPOAuthTokenState(_MCPBaseModel):
@@ -491,6 +502,7 @@ MCPAuthCredential = Annotated[
     | MCPBearerAuthCredential
     | MCPBasicAuthCredential
     | MCPHeaderAuthCredential
+    | MCPAzureWorkloadIdentityAuthCredential
     | MCPOAuthAuthCredential,
     Field(discriminator="strategy"),
 ]
@@ -556,6 +568,15 @@ class MCPServer(_MCPBaseModel):
             raise ValueError("remote MCP servers require 'url'")
         if not self.command and not self.url:
             raise ValueError("MCP servers require 'command' or 'url'")
+        if isinstance(self.auth, MCPAzureWorkloadIdentityAuthCredential):
+            if declared_transport not in {None, "http", "streamable-http"}:
+                raise ValueError(
+                    "Azure workload identity auth requires a Streamable HTTP MCP server"
+                )
+            if self.url is None or urlparse(self.url).scheme.lower() != "https":
+                raise ValueError(
+                    "Azure workload identity auth requires an HTTPS MCP server URL"
+                )
         if self.auth is not None and self.headers is not None:
             has_authorization_header = any(
                 key.lower() == "authorization" for key in self.headers

@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx2
 import mcp.types
@@ -18,8 +18,10 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.azure import AzureWorkloadIdentityAuth
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
 from openhands.sdk.mcp.config import (
+    MCPAzureWorkloadIdentityAuthCredential,
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPServer,
@@ -201,6 +203,15 @@ def _prepare_mcp_config(
             prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
                 server.model_dump()
             )
+
+    for server_name, server_spec in mcp_config.items():
+        auth = server_spec.auth
+        if not isinstance(auth, MCPAzureWorkloadIdentityAuthCredential):
+            continue
+        server = prepared.mcpServers.get(server_name)
+        if not isinstance(server, RemoteMCPServer):
+            continue
+        server.auth = AzureWorkloadIdentityAuth(server.url, auth.scope)
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth
@@ -439,6 +450,11 @@ def create_mcp_tools(
         on_tools_changed=on_tools_changed,
     )
     client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    for server in config.mcpServers.values():
+        runtime_auth = server.auth if isinstance(server, RemoteMCPServer) else None
+        if isinstance(runtime_auth, AzureWorkloadIdentityAuth):
+            azure_auth = cast(AzureWorkloadIdentityAuth, runtime_auth)
+            client._add_cleanup_callback(azure_auth.close)
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 

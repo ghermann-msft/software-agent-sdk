@@ -9012,6 +9012,22 @@ class TestMcpConfigToAcpServers:
             ("authorization", "Bearer explicit")
         ]
 
+    def test_azure_workload_identity_is_not_forwarded_as_static_auth(self):
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        }
+
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+
+        assert out[0].headers == []
+
     def test_sse_gated_on_capability(self):
         from acp.schema import SseMcpServer
 

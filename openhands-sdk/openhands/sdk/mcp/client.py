@@ -59,6 +59,7 @@ class MCPClient(AsyncMCPClient):
     _closed: bool
     _tools: "list[MCPToolDefinition]"
     _tools_reconciled_callback: ToolsReconciledCallback | None
+    _cleanup_callbacks: list[Callable[[], None]] | None = None
 
     def __init__(self, *args, **kwargs):
         # FastMCP 4 defaults to "auto", which negotiates the sessionless
@@ -71,6 +72,12 @@ class MCPClient(AsyncMCPClient):
         self._closed = False
         self._tools = []
         self._tools_reconciled_callback = None
+        self._cleanup_callbacks = []
+
+    def _add_cleanup_callback(self, callback: Callable[[], None]) -> None:
+        if self._cleanup_callbacks is None:
+            self._cleanup_callbacks = []
+        self._cleanup_callbacks.append(callback)
 
     @property
     def tools(self) -> "list[MCPToolDefinition]":
@@ -302,6 +309,16 @@ class MCPClient(AsyncMCPClient):
                 exc_info=True,
             )
         finally:
+            callbacks = self._cleanup_callbacks or []
+            for callback in reversed(callbacks):
+                try:
+                    callback()
+                except Exception:
+                    logger.warning(
+                        "Error cleaning up an MCP client resource",
+                        exc_info=True,
+                    )
+            callbacks.clear()
             self._executor.close()
             self._closed = True
 

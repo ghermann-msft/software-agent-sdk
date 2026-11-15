@@ -71,6 +71,30 @@ class MCPToolObservation(Observation):
                         image_urls=[f"data:{block.mime_type};base64,{block.data}"],
                     )
                 )
+            elif isinstance(block, mcp.types.EmbeddedResource):
+                resource = block.resource
+                if isinstance(resource, mcp.types.TextResourceContents):
+                    content.append(TextContent(text=resource.text))
+                elif resource.mime_type and resource.mime_type.startswith("image/"):
+                    content.append(
+                        ImageContent(
+                            image_urls=[
+                                f"data:{resource.mime_type};base64,{resource.blob}"
+                            ],
+                        )
+                    )
+                else:
+                    content.append(
+                        TextContent(
+                            text=json.dumps(
+                                {
+                                    "uri": str(resource.uri),
+                                    "mime_type": resource.mime_type,
+                                    "blob": resource.blob,
+                                }
+                            )
+                        )
+                    )
             else:
                 logger.warning(
                     f"Unsupported MCP content block type: {type(block)}. Ignoring."

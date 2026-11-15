@@ -5,7 +5,7 @@ import json
 import mcp.types
 from rich.text import Text
 
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.mcp.definition import MCPToolObservation
 
 
@@ -146,3 +146,77 @@ def test_mcp_observation_with_invalid_json():
     # Verify the content contains the original text
     text_content = str(visualization)
     assert "{ invalid json }" in text_content
+
+
+def test_mcp_observation_with_embedded_text_resource():
+    result = mcp.types.CallToolResult(
+        content=[
+            mcp.types.EmbeddedResource(
+                resource=mcp.types.TextResourceContents(
+                    uri="https://example.com/search-result",
+                    mime_type="application/json",
+                    text='{"answer":"current information"}',
+                )
+            )
+        ],
+        is_error=False,
+    )
+
+    observation = MCPToolObservation.from_call_tool_result("web_search", result)
+
+    assert observation.content == [
+        TextContent(text="[Tool 'web_search' executed.]"),
+        TextContent(text='{"answer":"current information"}'),
+    ]
+
+
+def test_mcp_observation_with_embedded_image_resource():
+    result = mcp.types.CallToolResult(
+        content=[
+            mcp.types.EmbeddedResource(
+                resource=mcp.types.BlobResourceContents(
+                    uri="file:///result.png",
+                    mime_type="image/png",
+                    blob="aW1hZ2U=",
+                )
+            )
+        ],
+        is_error=False,
+    )
+
+    observation = MCPToolObservation.from_call_tool_result("render", result)
+
+    assert observation.content == [
+        TextContent(text="[Tool 'render' executed.]"),
+        ImageContent(image_urls=["data:image/png;base64,aW1hZ2U="]),
+    ]
+
+
+def test_mcp_observation_with_embedded_binary_resource():
+    result = mcp.types.CallToolResult(
+        content=[
+            mcp.types.EmbeddedResource(
+                resource=mcp.types.BlobResourceContents(
+                    uri="file:///result.bin",
+                    mime_type="application/octet-stream",
+                    blob="AAEC",
+                )
+            )
+        ],
+        is_error=False,
+    )
+
+    observation = MCPToolObservation.from_call_tool_result("download", result)
+
+    assert observation.content == [
+        TextContent(text="[Tool 'download' executed.]"),
+        TextContent(
+            text=json.dumps(
+                {
+                    "uri": "file:///result.bin",
+                    "mime_type": "application/octet-stream",
+                    "blob": "AAEC",
+                }
+            )
+        ),
+    ]

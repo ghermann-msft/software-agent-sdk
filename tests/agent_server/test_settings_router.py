@@ -1051,6 +1051,44 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     assert servers["remote"]["headers"] == {"X-Api-Key": "tok-router-secret"}
 
 
+def test_remote_basic_mcp_setting_is_encrypted_and_reaches_created_agent(
+    client_with_settings,
+    temp_persistence_dir,
+    config_with_settings,
+):
+    response = client_with_settings.post(
+        "/api/settings/mcp/openhands-atlassian",
+        json={
+            "transport": "streamable-http",
+            "url": "https://mcp.atlassian.com/v2/mcp",
+            "auth": {
+                "strategy": "basic",
+                "username": "user@example.com",
+                "password": "atlassian-mcp-token",
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    on_disk_text = (temp_persistence_dir / "settings.json").read_text()
+    assert "atlassian-mcp-token" not in on_disk_text
+
+    persisted = FileSettingsStore(
+        persistence_dir=temp_persistence_dir,
+        cipher=Cipher(config_with_settings.secret_key.get_secret_value()),
+    ).load()
+    assert persisted is not None
+    server = persisted.agent_settings.mcp_config["openhands-atlassian"]
+    assert server.auth is not None
+    assert server.auth.to_http_headers() == {
+        "Authorization": "Basic dXNlckBleGFtcGxlLmNvbTphdGxhc3NpYW4tbWNwLXRva2Vu"
+    }
+    assert (
+        persisted.agent_settings.create_agent().mcp_config["openhands-atlassian"]
+        == server
+    )
+
+
 def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_settings):
     github = client_with_settings.post(
         "/api/settings/mcp/github",

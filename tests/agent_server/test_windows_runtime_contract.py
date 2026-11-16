@@ -186,10 +186,12 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     ).read_text(encoding="utf-8")
 
     assert "windows_image_only:" in workflow
+    assert "windows_image:" in workflow
     assert (
-        "ghcr.io/openhands/agent-server:${{ github.sha }}"
+        "${{ inputs.windows_image }}:${{ github.sha }}"
         "-windows-ltsc2025-amd64"
     ) in workflow
+    assert "default: ghcr.io/openhands/agent-server" in workflow
     assert "OPENHANDS_GHCR_TOKEN" in workflow
     assert "Verify anonymous manifest pull" in workflow
     assert "windows-server-2025, windows-containers" in workflow

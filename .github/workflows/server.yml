@@ -32,6 +32,10 @@ on:
                 description: Build and publish only the native Windows image
                 type: boolean
                 default: false
+            windows_image:
+                description: Native Windows image repository
+                type: string
+                default: ghcr.io/openhands/agent-server
             windows_runner_mode:
                 description: Native Windows container builder
                 type: choice
@@ -39,6 +43,10 @@ on:
                 options:
                     - github-hosted
                     - self-hosted
+            windows_verify_anonymous_pull:
+                description: Verify the image is publicly pullable after publication
+                type: boolean
+                default: true
 
 permissions:
     contents: read
@@ -332,8 +340,8 @@ jobs:
         runs-on: ${{ inputs.windows_runner_mode == 'self-hosted' && fromJSON('["self-hosted","Windows","X64","windows-server-2025","windows-containers"]') || 'windows-2025' }}
         timeout-minutes: 90
         env:
-            IMAGE: ghcr.io/openhands/agent-server
-            IMAGE_TAG: ghcr.io/openhands/agent-server:${{ github.sha }}-windows-ltsc2025-amd64
+            IMAGE: ${{ inputs.windows_image }}
+            IMAGE_TAG: ${{ inputs.windows_image }}:${{ github.sha }}-windows-ltsc2025-amd64
 
         steps:
             - name: Checkout
@@ -370,7 +378,9 @@ jobs:
                   }
 
                   if (
-                      '${{ github.repository }}' -ne 'OpenHands/software-agent-sdk' -and
+                      $env:IMAGE -eq 'ghcr.io/openhands/agent-server' -and
+                      '${{ github.repository }}' -ne
+                      'OpenHands/software-agent-sdk' -and
                       [string]::IsNullOrWhiteSpace($env:OPENHANDS_GHCR_TOKEN)
                   ) {
                       $errors.Add(
@@ -498,12 +508,14 @@ jobs:
                   "Repository digest: $repoDigest"
 
             - name: Verify anonymous manifest pull
+              if: inputs.windows_verify_anonymous_pull
               shell: pwsh
               env:
                   DIGEST: ${{ steps.publish.outputs.digest }}
               run: |
                   $ErrorActionPreference = 'Stop'
-                  $scope = 'repository:openhands/agent-server:pull'
+                  $repository = $env:IMAGE -replace '^ghcr\.io/', ''
+                  $scope = "repository:${repository}:pull"
                   $tokenUrl = (
                       'https://ghcr.io/token?service=ghcr.io&scope=' +
                       [uri]::EscapeDataString($scope)
@@ -521,7 +533,7 @@ jobs:
                   }
                   $tag = '${{ github.sha }}-windows-ltsc2025-amd64'
                   $response = Invoke-WebRequest `
-                    -Uri "https://ghcr.io/v2/openhands/agent-server/manifests/$tag" `
+                    -Uri "https://ghcr.io/v2/$repository/manifests/$tag" `
                     -Headers $headers
                   $anonymousDigest = $response.Headers['Docker-Content-Digest']
                   if ($anonymousDigest -ne $env:DIGEST) {
@@ -544,7 +556,7 @@ jobs:
                   - Platform: ``windows/amd64``
                   - Runtime spec: ``windows-server-2025-amd64``
                   - Pull by digest: ``$env:IMAGE@$env:DIGEST``
-                  - Anonymous manifest pull: verified
+                  - Anonymous manifest pull requested: ``${{ inputs.windows_verify_anonymous_pull }}``
                   "@ >> $env:GITHUB_STEP_SUMMARY
 
     build-and-push-image:

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal, Self
 
@@ -85,6 +86,10 @@ def _default_web_url() -> str | None:
 
 
 DEFAULT_CONVERSATION_IMAGE = "ghcr.io/openhands/agent-server:latest-python"
+
+
+def default_conversation_worktree_root() -> Path:
+    return Path(tempfile.gettempdir()) / "conversation-worktrees"
 
 
 class WebhookSpec(BaseModel):
@@ -285,7 +290,7 @@ class Config(BaseModel):
         ),
     )
     conversation_worktree_root: Path = Field(
-        default=Path("/tmp/conversation-worktrees"),
+        default_factory=default_conversation_worktree_root,
         description=(
             "Root directory for conversation git worktrees. Each conversation gets a "
             "subdirectory under this root when using git-backed workspaces with "

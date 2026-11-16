@@ -14,7 +14,7 @@ TargetType = Literal[
     "base-image",
     "builder",
 ]
-PlatformType = Literal["linux/amd64", "linux/arm64"]
+PlatformType = Literal["linux/amd64", "linux/arm64", "windows/amd64"]
 
 
 class CommandResult(BaseModel):

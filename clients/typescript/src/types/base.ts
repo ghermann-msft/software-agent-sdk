@@ -65,6 +65,39 @@ export interface LLM {
   [key: string]: unknown;
 }
 
+export interface RuntimeResourceSize {
+  cpu: number;
+  memory_gib: number;
+}
+
+export interface RuntimeResourceProfile {
+  id: 'standard' | 'high-memory' | 'build';
+  minimum: RuntimeResourceSize;
+  recommended: RuntimeResourceSize;
+}
+
+export interface RuntimeImageContract {
+  spec_id: string;
+  os: 'linux' | 'windows' | 'macos' | 'unknown';
+  architecture: string;
+  container_platform: string;
+  api_port: number;
+  liveness_paths: string[];
+  readiness_path: string;
+  server_info_path: string;
+  workspace_mount_path: string;
+  workspace_path: string;
+  conversation_worktree_path: string;
+  durable_state_path: string | null;
+  conversations_path: string;
+  bash_events_path: string;
+  persistence_path: string | null;
+  command_shell: string;
+  command_shell_args: string[];
+  required_environment: string[];
+  resource_profiles: RuntimeResourceProfile[];
+}
+
 export interface ServerInfo {
   uptime: number;
   idle_time: number;
@@ -79,6 +112,7 @@ export interface ServerInfo {
   capabilities?: string[];
   conversation_runtime?: 'local' | 'docker';
   app_backend_ingress_url?: string | null;
+  runtime_image?: RuntimeImageContract;
   [key: string]: unknown;
 }
 

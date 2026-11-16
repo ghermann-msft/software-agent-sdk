@@ -407,8 +407,13 @@ RUN set -eux; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
-    mkdir -p /workspace/project; \
-    chown -R "${USERNAME}:${USERNAME}" /workspace
+    mkdir -p \
+        /openhands/bash_events \
+        /openhands/conversations \
+        /openhands/persistence \
+        /workspace/project \
+        /workspace/worktrees; \
+    chown -R "${USERNAME}:${USERNAME}" /openhands /workspace
 
 # Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
 # The payload itself (Node.js 24 + the ACP npm packages, under $ACP_NODE_DIR) is
@@ -455,6 +460,13 @@ ENV LOG_JSON=true
 # The ACP CLIs run without the user's host home here, so OpenHands supplies the
 # managed skill catalog they cannot read for themselves (#4019).
 ENV OH_ACP_SKILL_SOURCING=openhands_managed
+ENV OH_BASH_EVENTS_DIR=/openhands/bash_events
+ENV OH_CONVERSATIONS_PATH=/openhands/conversations
+ENV OH_CONVERSATION_WORKTREE_ROOT=/workspace/worktrees
+ENV OH_PERSISTENCE_DIR=/openhands/persistence
+ENV OH_RUNTIME_DURABLE_STATE_PATH=/openhands
+ENV OH_RUNTIME_WORKSPACE_MOUNT_PATH=/workspace
+ENV OH_WORKSPACE_PATH=/workspace/project
 EXPOSE ${PORT}
 
 ####################################################################################

@@ -51,6 +51,8 @@ namespaces = true
 "openhands.agent_server" = [
   "code_server_proxy.cjs",
   "docker/Dockerfile",
+  "docker/Dockerfile.windows",
+  "docker/WINDOWS_IMAGE.md",
   "docker/wallpaper.svg",
   "vscode_extensions/**/*.json",
   "vscode_extensions/**/*.js",

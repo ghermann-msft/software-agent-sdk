@@ -3,12 +3,18 @@ import os
 import sys
 import time
 from importlib.metadata import version
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.config import default_conversation_worktree_root
 from openhands.agent_server.launch import configured_browser_available
+from openhands.agent_server.runtime_contract import (
+    RuntimeImageContract,
+    build_runtime_image_contract,
+)
 from openhands.agent_server.server_context import (
     ServerContext,
     get_server_context,
@@ -102,6 +108,12 @@ class ServerInfo(BaseModel):
     max_foreground_terminal_timeout_seconds: float | None = Field(
         default_factory=lambda: get_max_foreground_timeout_seconds()
     )
+    runtime_image: RuntimeImageContract = Field(
+        default_factory=lambda: build_runtime_image_contract(
+            Path("workspace/project"),
+            default_conversation_worktree_root(),
+        )
+    )
 
     docs: str = "/docs"
     redoc: str = "/redoc"
@@ -165,6 +177,10 @@ def build_server_info(
     app_backend_ingress_url: str | None = None,
     conversation_runtime_selectable: bool = False,
     browser_available: bool | None = None,
+    workspace_path: Path = Path("workspace/project"),
+    conversation_worktree_path: Path | None = None,
+    conversations_path: Path = Path("workspace/conversations"),
+    bash_events_path: Path = Path("workspace/bash_events"),
 ) -> ServerInfo:
     """Build the server info; ``browser_available`` None probes this process."""
     now = time.time()
@@ -177,7 +193,16 @@ def build_server_info(
         ),
         app_backend_ingress_url=app_backend_ingress_url,
         usable_tools=_usable_tools(browser_available),
+        runtime_image=build_runtime_image_contract(
+            workspace_path,
+            conversation_worktree_path or default_conversation_worktree_root(),
+            conversations_path,
+            bash_events_path,
+        ),
     )
+    info.capabilities.append("runtime_image_contract_v1")
+    if info.runtime_image.os == "windows":
+        info.capabilities.append("native_windows_runtime_v1")
     info.capabilities.append("canvas_app_backend_secret_grants_v1")
     info.capabilities.append("canvas_app_backend_enable_lifecycle_v1")
     if app_backend_ingress_url:
@@ -195,4 +220,8 @@ async def get_server_info(
         app_backend_ingress_url=config.app_backend_public_url,
         conversation_runtime_selectable=config.conversation_runtime_selectable,
         browser_available=configured_browser_available(config),
+        workspace_path=config.workspace_path,
+        conversation_worktree_path=config.conversation_worktree_root,
+        conversations_path=config.conversations_path,
+        bash_events_path=config.bash_events_dir,
     )

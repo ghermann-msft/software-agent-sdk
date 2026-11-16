@@ -15,7 +15,12 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
+from openhands.agent_server.config import (
+    ACPSkillSourcing,
+    Config,
+    WebhookSpec,
+    default_conversation_worktree_root,
+)
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
@@ -606,7 +611,7 @@ class ConversationService:
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     conversation_idle_ttl_seconds: float | None = None
     conversation_worktree_root: Path = field(
-        default=Path("/tmp/conversation-worktrees")
+        default_factory=default_conversation_worktree_root
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True

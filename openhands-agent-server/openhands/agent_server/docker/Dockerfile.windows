@@ -1,0 +1,78 @@
+# escape=`
+
+ARG PYTHON_BASE=python:3.13.17-windowsservercore-ltsc2025@sha256:806c67285624534627be8202d476b4c793c4d28e9c2342d881db420ce626033a
+ARG RUNTIME_BASE=mcr.microsoft.com/windows/servercore:ltsc2025@sha256:e3945d74c66f90f05c156bf32ad22f6642f27166a090cbd45a2035aab054c83e
+
+FROM ${PYTHON_BASE} AS builder
+
+SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+WORKDIR C:\src
+COPY . C:\src
+
+RUN python -m pip install --no-cache-dir uv==0.13.7; `
+    uv sync --frozen --group dev; `
+    uv run pyinstaller openhands-agent-server\openhands\agent_server\agent-server.spec; `
+    if (-not (Test-Path C:\src\dist\openhands-agent-server.exe)) { `
+        throw 'PyInstaller did not produce dist\openhands-agent-server.exe' `
+    }
+
+FROM ${RUNTIME_BASE} AS runtime
+
+SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+ARG MINGIT_VERSION=2.56.0.4
+ARG MINGIT_SHA256=e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+
+RUN $uri = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-$env:MINGIT_VERSION-64-bit.zip"; `
+    Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile C:\MinGit.zip; `
+    if ((Get-FileHash C:\MinGit.zip -Algorithm SHA256).Hash -ne $env:MINGIT_SHA256) { `
+        throw 'MinGit SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\MinGit.zip -DestinationPath C:\MinGit; `
+    Remove-Item C:\MinGit.zip; `
+    New-Item -ItemType Directory -Force `
+        C:\AgentServer, `
+        C:\OpenHands, `
+        C:\OpenHands\bash_events, `
+        C:\OpenHands\conversations, `
+        C:\OpenHands\persistence, `
+        C:\workspace\project, `
+        C:\workspace\worktrees | Out-Null; `
+    icacls C:\OpenHands /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null; `
+    icacls C:\workspace /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null
+
+COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
+
+ENV PATH="C:\MinGit\cmd;C:\MinGit\mingw64\bin;${PATH}" `
+    LOG_JSON=true `
+    OH_ACP_SKILL_SOURCING=openhands_managed `
+    OH_BASH_EVENTS_DIR=C:\OpenHands\bash_events `
+    OH_CONVERSATIONS_PATH=C:\OpenHands\conversations `
+    OH_CONVERSATION_WORKTREE_ROOT=C:\workspace\worktrees `
+    OH_ENABLE_BROWSER=false `
+    OH_ENABLE_VSCODE=false `
+    OH_PERSISTENCE_DIR=C:\OpenHands\persistence `
+    OH_RUNTIME_API_PORT=8000 `
+    OH_RUNTIME_COMMAND_SHELL=powershell.exe `
+    OH_RUNTIME_CONTAINER_PLATFORM=windows/amd64 `
+    OH_RUNTIME_DURABLE_STATE_PATH=C:\OpenHands `
+    OH_RUNTIME_SPEC_ID=windows-server-2025-amd64 `
+    OH_RUNTIME_WORKSPACE_MOUNT_PATH=C:\workspace `
+    OH_WORKSPACE_PATH=C:\workspace\project `
+    OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF} `
+    OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+
+USER ContainerUser
+WORKDIR C:\workspace\project
+EXPOSE 8000
+VOLUME ["C:\\workspace", "C:\\OpenHands"]
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 `
+    CMD powershell -NoLogo -NoProfile -NonInteractive -Command `
+        "try { $response = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ready; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; exit 1"
+
+ENTRYPOINT ["C:\\AgentServer\\openhands-agent-server.exe"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]

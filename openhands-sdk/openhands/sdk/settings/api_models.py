@@ -31,15 +31,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
-    AnyHttpUrl,
     BaseModel,
     ConfigDict,
-    EmailStr,
     Field,
     GetJsonSchemaHandler,
     RootModel,
     SecretStr,
-    field_validator,
 )
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
@@ -228,86 +225,6 @@ class SettingsUpdateRequest(BaseModel):
         pattern=PROFILE_NAME_PATTERN,
         description="Name of the active meta-profile to persist; null clears it.",
     )
-
-
-AtlassianProduct = Literal["jira", "confluence"]
-ATLASSIAN_MCP_SERVER_KEYS: dict[AtlassianProduct, str] = {
-    "jira": "openhands-atlassian-jira",
-    "confluence": "openhands-atlassian-confluence",
-}
-ATLASSIAN_MCP_PACKAGE_VERSION = "0.23.1"
-
-
-class AtlassianIntegrationRequest(BaseModel):
-    """Per-user Atlassian Cloud credentials used by Jira and Confluence tools."""
-
-    site_url: AnyHttpUrl = Field(
-        description="Atlassian Cloud site URL, for example https://example.atlassian.net."
-    )
-    email: EmailStr
-    api_token: SecretStr
-
-    @field_validator("site_url")
-    @classmethod
-    def _require_atlassian_cloud(cls, value: AnyHttpUrl) -> AnyHttpUrl:
-        host = value.host or ""
-        if value.scheme != "https" or not host.endswith(".atlassian.net"):
-            raise ValueError("site_url must be an HTTPS Atlassian Cloud site")
-        if value.path not in {"", "/", "/wiki", "/wiki/"}:
-            raise ValueError("site_url must identify the Atlassian site root")
-        return value
-
-    @field_validator("api_token")
-    @classmethod
-    def _require_api_token(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("api_token must not be empty")
-        return value
-
-    def to_mcp_server(self, product: AtlassianProduct) -> MCPServer:
-        site_url = str(self.site_url).rstrip("/")
-        if site_url.endswith("/wiki"):
-            site_url = site_url.removesuffix("/wiki")
-        email = self.email
-        token = self.api_token
-        if product == "jira":
-            env = {
-                "JIRA_URL": SecretStr(site_url),
-                "JIRA_USERNAME": SecretStr(email),
-                "JIRA_API_TOKEN": token,
-            }
-        else:
-            env = {
-                "CONFLUENCE_URL": SecretStr(f"{site_url}/wiki"),
-                "CONFLUENCE_USERNAME": SecretStr(email),
-                "CONFLUENCE_API_TOKEN": token,
-            }
-        return MCPServer(
-            transport="stdio",
-            command="uvx",
-            args=[
-                "--from",
-                f"mcp-atlassian=={ATLASSIAN_MCP_PACKAGE_VERSION}",
-                "mcp-atlassian",
-            ],
-            env=env,
-            description=f"Authenticated Atlassian {product.title()} tools",
-        )
-
-
-class AtlassianProductConnection(BaseModel):
-    """One configured Atlassian product without exposing its API token."""
-
-    connected: bool
-    site_url: str | None = None
-    email: str | None = None
-
-
-class AtlassianIntegrationResponse(BaseModel):
-    """Independent Jira and Confluence connection status."""
-
-    jira: AtlassianProductConnection
-    confluence: AtlassianProductConnection
 
 
 # ── Secrets API Models ────────────────────────────────────────────────────

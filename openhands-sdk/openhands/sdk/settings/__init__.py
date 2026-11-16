@@ -12,9 +12,6 @@ from .acp_providers import (
     get_acp_provider,
 )
 from .api_models import (
-    AtlassianIntegrationRequest,
-    AtlassianIntegrationResponse,
-    AtlassianProductConnection,
     SecretCreateRequest,
     SecretItemResponse,
     SecretsListResponse,
@@ -88,9 +85,6 @@ __all__ = [
     "ACP_PROVIDERS",
     "ACPFileSecretSpec",
     "ACPProviderInfo",
-    "AtlassianIntegrationRequest",
-    "AtlassianIntegrationResponse",
-    "AtlassianProductConnection",
     "build_session_model_meta",
     "default_acp_file_secrets",
     "AGENT_SETTINGS_SCHEMA_VERSION",

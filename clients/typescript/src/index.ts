@@ -347,12 +347,6 @@ export type {
   RemoteMCPTransport,
   StdioMCPServer,
 } from './models/mcp-settings';
-export type {
-  AtlassianConnectionRequest,
-  AtlassianConnectionStatus,
-  AtlassianProduct,
-  AtlassianProductConnection,
-} from './models/atlassian-settings';
 
 export type {
   AliveStatus,

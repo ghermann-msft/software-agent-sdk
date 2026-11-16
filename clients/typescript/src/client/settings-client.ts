@@ -21,11 +21,6 @@ import type {
   AgentServerSettingsSchema,
 } from '../models/agent-server-api';
 import type { MCPServer, MCPServerPatch } from '../models/mcp-settings';
-import type {
-  AtlassianConnectionRequest,
-  AtlassianConnectionStatus,
-  AtlassianProduct,
-} from '../models/atlassian-settings';
 
 /** An experimental feature and whether it is on (`GET /api/settings/experimental`). */
 export interface ExperimentalFeature {
@@ -141,34 +136,6 @@ export class SettingsClient {
   async deleteMcpServer(settingsKey: string): Promise<AgentServerSettingsPatchResponse> {
     const response = await this.client.delete<AgentServerSettingsPatchResponse>(
       `/api/settings/mcp/${encodeURIComponent(settingsKey)}`
-    );
-    return response.data;
-  }
-
-  /** Get the current user's independent Jira and Confluence connection status. */
-  async getAtlassianIntegration(): Promise<AtlassianConnectionStatus> {
-    const response = await this.client.get<AtlassianConnectionStatus>(
-      '/api/v1/integrations/atlassian'
-    );
-    return response.data;
-  }
-
-  /** Validate and connect one Atlassian product for the current user. */
-  async connectAtlassianProduct(
-    product: AtlassianProduct,
-    request: AtlassianConnectionRequest
-  ): Promise<AtlassianConnectionStatus> {
-    const response = await this.client.put<AtlassianConnectionStatus>(
-      `/api/v1/integrations/atlassian/${product}`,
-      request
-    );
-    return response.data;
-  }
-
-  /** Disconnect one Atlassian product without changing the other. */
-  async disconnectAtlassianProduct(product: AtlassianProduct): Promise<AtlassianConnectionStatus> {
-    const response = await this.client.delete<AtlassianConnectionStatus>(
-      `/api/v1/integrations/atlassian/${product}`
     );
     return response.data;
   }

@@ -73,25 +73,29 @@ class MCPToolObservation(Observation):
                 )
             elif isinstance(block, mcp.types.EmbeddedResource):
                 resource = block.resource
+                mime_type = resource.mime_type or "application/octet-stream"
+                resource_header = (
+                    f"[Embedded resource: {resource.uri} ({mime_type})]"
+                )
                 if isinstance(resource, mcp.types.TextResourceContents):
-                    content.append(TextContent(text=resource.text))
-                elif resource.mime_type and resource.mime_type.startswith("image/"):
+                    content.append(
+                        TextContent(text=f"{resource_header}\n{resource.text}")
+                    )
+                elif mime_type.startswith("image/"):
+                    content.append(TextContent(text=resource_header))
                     content.append(
                         ImageContent(
                             image_urls=[
-                                f"data:{resource.mime_type};base64,{resource.blob}"
+                                f"data:{mime_type};base64,{resource.blob}"
                             ],
                         )
                     )
                 else:
                     content.append(
                         TextContent(
-                            text=json.dumps(
-                                {
-                                    "uri": str(resource.uri),
-                                    "mime_type": resource.mime_type,
-                                    "blob": resource.blob,
-                                }
+                            text=(
+                                f"{resource_header}\n"
+                                f"data:{mime_type};base64,{resource.blob}"
                             )
                         )
                     )

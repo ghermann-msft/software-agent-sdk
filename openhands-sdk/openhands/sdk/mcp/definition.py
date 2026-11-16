@@ -74,9 +74,7 @@ class MCPToolObservation(Observation):
             elif isinstance(block, mcp.types.EmbeddedResource):
                 resource = block.resource
                 mime_type = resource.mime_type or "application/octet-stream"
-                resource_header = (
-                    f"[Embedded resource: {resource.uri} ({mime_type})]"
-                )
+                resource_header = f"[Embedded resource: {resource.uri} ({mime_type})]"
                 if isinstance(resource, mcp.types.TextResourceContents):
                     content.append(
                         TextContent(text=f"{resource_header}\n{resource.text}")
@@ -85,9 +83,7 @@ class MCPToolObservation(Observation):
                     content.append(TextContent(text=resource_header))
                     content.append(
                         ImageContent(
-                            image_urls=[
-                                f"data:{mime_type};base64,{resource.blob}"
-                            ],
+                            image_urls=[f"data:{mime_type};base64,{resource.blob}"],
                         )
                     )
                 else:

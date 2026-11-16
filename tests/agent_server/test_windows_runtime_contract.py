@@ -189,6 +189,8 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
 
     assert "windows_image_only:" in workflow
     assert "windows_image:" in workflow
+    assert "windows_visibility_only:" in workflow
+    assert "windows_existing_reference:" in workflow
     assert (
         "${{ inputs.windows_image }}:${{ github.sha }}"
         "-windows-ltsc2025-amd64"
@@ -196,5 +198,6 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     assert "default: ghcr.io/openhands/agent-server" in workflow
     assert "OPENHANDS_GHCR_TOKEN" in workflow
     assert "Verify anonymous manifest pull" in workflow
+    assert "/user/packages/container/${PACKAGE_NAME}" in workflow
     assert "windows-server-2025, windows-containers" in workflow
     assert "latest-windows" not in workflow

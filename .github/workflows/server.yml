@@ -36,6 +36,14 @@ on:
                 description: Native Windows image repository
                 type: string
                 default: ghcr.io/openhands/agent-server
+            windows_visibility_only:
+                description: Make an existing owner image public and verify it
+                type: boolean
+                default: false
+            windows_existing_reference:
+                description: Existing tag@digest for visibility-only mode
+                type: string
+                default: ''
             windows_runner_mode:
                 description: Native Windows container builder
                 type: choice
@@ -43,10 +51,6 @@ on:
                 options:
                     - github-hosted
                     - self-hosted
-            windows_verify_anonymous_pull:
-                description: Verify the image is publicly pullable after publication
-                type: boolean
-                default: true
 
 permissions:
     contents: read
@@ -336,7 +340,10 @@ jobs:
 
     build-smoke-publish-windows-image:
         name: Build, smoke, and publish Windows Server 2025 image
-        if: github.event_name == 'workflow_dispatch' && inputs.windows_image_only
+        if: >
+            github.event_name == 'workflow_dispatch' &&
+            inputs.windows_image_only &&
+            !inputs.windows_visibility_only
         runs-on: ${{ inputs.windows_runner_mode == 'self-hosted' && fromJSON('["self-hosted","Windows","X64","windows-server-2025","windows-containers"]') || 'windows-2025' }}
         timeout-minutes: 90
         env:
@@ -508,7 +515,6 @@ jobs:
                   "Repository digest: $repoDigest"
 
             - name: Verify anonymous manifest pull
-              if: inputs.windows_verify_anonymous_pull
               shell: pwsh
               env:
                   DIGEST: ${{ steps.publish.outputs.digest }}
@@ -556,8 +562,93 @@ jobs:
                   - Platform: ``windows/amd64``
                   - Runtime spec: ``windows-server-2025-amd64``
                   - Pull by digest: ``$env:IMAGE@$env:DIGEST``
-                  - Anonymous manifest pull requested: ``${{ inputs.windows_verify_anonymous_pull }}``
+                  - Anonymous manifest pull: verified
                   "@ >> $env:GITHUB_STEP_SUMMARY
+
+    publish-windows-image-visibility:
+        name: Publish existing Windows image visibility
+        if: >
+            github.event_name == 'workflow_dispatch' &&
+            inputs.windows_image_only &&
+            inputs.windows_visibility_only
+        runs-on: ubuntu-24.04
+        env:
+            IMAGE: ${{ inputs.windows_image }}
+            EXISTING_REFERENCE: ${{ inputs.windows_existing_reference }}
+
+        steps:
+            - name: Make owner package public
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+                  PREFIX="ghcr.io/${OWNER}/"
+                  if [[ "$IMAGE" != "$PREFIX"* ]]; then
+                      echo "ERROR: visibility-only mode is limited to ${PREFIX}*"
+                      exit 1
+                  fi
+                  PACKAGE_NAME=${IMAGE#"$PREFIX"}
+                  if [[ -z "$PACKAGE_NAME" || "$PACKAGE_NAME" == */* ]]; then
+                      echo "ERROR: expected one user-owned GHCR package name"
+                      exit 1
+                  fi
+                  IMAGE_TAG=${EXISTING_REFERENCE%@*}
+                  EXPECTED_DIGEST=${EXISTING_REFERENCE#*@}
+                  if [[
+                    -z "$IMAGE_TAG" ||
+                    -z "$EXPECTED_DIGEST" ||
+                    "$IMAGE_TAG" == "$EXPECTED_DIGEST"
+                  ]]; then
+                      echo "ERROR: windows_existing_reference must be tag@digest"
+                      exit 1
+                  fi
+                  echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+                  echo "EXPECTED_DIGEST=$EXPECTED_DIGEST" >> "$GITHUB_ENV"
+                  gh api \
+                    --method PATCH \
+                    "/user/packages/container/${PACKAGE_NAME}" \
+                    -f visibility=public \
+                    --jq '.visibility'
+
+            - name: Verify anonymous manifest pull
+              run: |
+                  set -euo pipefail
+                  REPOSITORY=${IMAGE#ghcr.io/}
+                  SCOPE="repository:${REPOSITORY}:pull"
+                  TOKEN=$(curl -fsSLG \
+                    --data-urlencode service=ghcr.io \
+                    --data-urlencode scope="$SCOPE" \
+                    https://ghcr.io/token | jq -er '.token')
+                  HEADERS=$(mktemp)
+                  curl -fsSL \
+                    -D "$HEADERS" \
+                    -o /dev/null \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+                    "https://ghcr.io/v2/${REPOSITORY}/manifests/${IMAGE_TAG}"
+                  ANONYMOUS_DIGEST=$(awk '
+                    tolower($1) == "docker-content-digest:" {
+                      gsub("\r", "", $2)
+                      print $2
+                    }
+                  ' "$HEADERS")
+                  if [[ "$ANONYMOUS_DIGEST" != "$EXPECTED_DIGEST" ]]; then
+                      echo "ERROR: anonymous digest '$ANONYMOUS_DIGEST' != '$EXPECTED_DIGEST'"
+                      exit 1
+                  fi
+                  echo "Anonymous manifest pull verified: $ANONYMOUS_DIGEST"
+
+            - name: Publish summary
+              run: |
+                  {
+                    echo '## Public Windows Agent Server image'
+                    echo
+                    echo "- Image: \`${IMAGE}:${IMAGE_TAG}\`"
+                    echo "- Digest: \`${EXPECTED_DIGEST}\`"
+                    echo '- Visibility: `public`'
+                    echo '- Anonymous manifest pull: verified'
+                  } >> "$GITHUB_STEP_SUMMARY"
 
     build-and-push-image:
         name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})

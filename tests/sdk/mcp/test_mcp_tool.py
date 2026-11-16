@@ -97,6 +97,87 @@ class TestMCPToolObservation:
         assert hasattr(observation.content[2], "image_urls")
         assert observation.is_error is False
 
+    def test_from_call_tool_result_with_embedded_text_resource(self):
+        """Test converting a Foundry-style embedded search result."""
+        result = mcp.types.CallToolResult(
+            content=[
+                mcp.types.EmbeddedResource(
+                    resource=mcp.types.TextResourceContents(
+                        uri="about:web-search-answer",
+                        mime_type="text/plain",
+                        text="Roquefort is a sheep's milk blue cheese from France.",
+                    )
+                )
+            ],
+            is_error=False,
+        )
+
+        observation = MCPToolObservation.from_call_tool_result(
+            tool_name="foundry-web-search_web_search", result=result
+        )
+
+        assert len(observation.content) == 2
+        assert isinstance(observation.content[1], TextContent)
+        assert observation.content[1].text == (
+            "[Embedded resource: about:web-search-answer (text/plain)]\n"
+            "Roquefort is a sheep's milk blue cheese from France."
+        )
+
+    def test_from_call_tool_result_with_embedded_blob_resource(self):
+        """Test preserving non-image embedded blobs as labeled data URLs."""
+        result = mcp.types.CallToolResult(
+            content=[
+                mcp.types.EmbeddedResource(
+                    resource=mcp.types.BlobResourceContents(
+                        uri="file:///search-result.pdf",
+                        mime_type="application/pdf",
+                        blob="JVBERi0xLjQ=",
+                    )
+                )
+            ],
+            is_error=False,
+        )
+
+        observation = MCPToolObservation.from_call_tool_result(
+            tool_name="test_tool", result=result
+        )
+
+        assert len(observation.content) == 2
+        assert isinstance(observation.content[1], TextContent)
+        assert observation.content[1].text == (
+            "[Embedded resource: file:///search-result.pdf (application/pdf)]\n"
+            "data:application/pdf;base64,JVBERi0xLjQ="
+        )
+
+    def test_from_call_tool_result_with_embedded_image_resource(self):
+        """Test exposing embedded image blobs as LLM image content."""
+        result = mcp.types.CallToolResult(
+            content=[
+                mcp.types.EmbeddedResource(
+                    resource=mcp.types.BlobResourceContents(
+                        uri="file:///search-result.png",
+                        mime_type="image/png",
+                        blob="iVBORw0KGgo=",
+                    )
+                )
+            ],
+            is_error=False,
+        )
+
+        observation = MCPToolObservation.from_call_tool_result(
+            tool_name="test_tool", result=result
+        )
+
+        assert len(observation.content) == 3
+        assert isinstance(observation.content[1], TextContent)
+        assert observation.content[1].text == (
+            "[Embedded resource: file:///search-result.png (image/png)]"
+        )
+        assert isinstance(observation.content[2], ImageContent)
+        assert observation.content[2].image_urls == [
+            "data:image/png;base64,iVBORw0KGgo="
+        ]
+
     def test_to_llm_content_success(self):
         """Test agent observation formatting for success."""
         observation = MCPToolObservation.from_text(

@@ -124,7 +124,9 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
 
     assert "windowsservercore-ltsc2025@sha256:" in dockerfile
     assert "servercore:ltsc2025@sha256:" in dockerfile
+    assert "ARG MINGIT_URL=https://github.com/git-for-windows/" in dockerfile
     assert "MINGIT_SHA256=" in dockerfile
+    assert "$uri =" not in dockerfile
     assert "OH_RUNTIME_SPEC_ID=windows-server-2025-amd64" in dockerfile
     assert "OH_WORKSPACE_PATH=C:\\workspace\\project" in dockerfile
     assert "OH_RUNTIME_WORKSPACE_MOUNT_PATH=C:\\workspace" in dockerfile

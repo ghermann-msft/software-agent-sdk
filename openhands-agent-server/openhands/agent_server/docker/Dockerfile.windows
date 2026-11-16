@@ -21,13 +21,12 @@ FROM ${RUNTIME_BASE} AS runtime
 
 SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-ARG MINGIT_VERSION=2.56.0.4
+ARG MINGIT_URL=https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip
 ARG MINGIT_SHA256=e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown
 
-RUN $uri = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-$env:MINGIT_VERSION-64-bit.zip"; `
-    Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile C:\MinGit.zip; `
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.zip; `
     if ((Get-FileHash C:\MinGit.zip -Algorithm SHA256).Hash -ne $env:MINGIT_SHA256) { `
         throw 'MinGit SHA256 verification failed' `
     }; `

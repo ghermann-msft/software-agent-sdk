@@ -152,7 +152,9 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
     assert (
         'ENV PATH="C:\\Perforce;C:\\Perforce\\p4mcp;'
-        'C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;${PATH}"' in dockerfile
+        "C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;"
+        "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;"
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0"' in dockerfile
     )
     assert "PERFORCE_NOTICES.md" in dockerfile
     assert "Perforce-p4-legal.txt" in dockerfile

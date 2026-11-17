@@ -81,7 +81,7 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:P4_URL -OutFile C:\Perforce\p4.
 COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
 COPY openhands-agent-server\openhands\agent_server\docker\PERFORCE_NOTICES.md C:\AgentServer\licenses\PERFORCE_NOTICES.md
 
-ENV PATH="C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;${PATH}" `
+ENV PATH="C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0" `
     LOG_JSON=true `
     OH_ACP_SKILL_SOURCING=openhands_managed `
     OH_BASH_EVENTS_DIR=C:\OpenHands\bash_events `

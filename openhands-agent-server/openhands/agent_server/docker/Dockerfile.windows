@@ -23,6 +23,11 @@ SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreferenc
 
 ARG MINGIT_URL=https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip
 ARG MINGIT_SHA256=e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877
+ARG P4_URL=https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe
+ARG P4_SHA256=b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b
+ARG P4_MCP_VERSION=2026.4.3126709
+ARG P4_MCP_URL=https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip
+ARG P4_MCP_SHA256=7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown
 
@@ -34,18 +39,49 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
     Remove-Item C:\MinGit.zip; `
     New-Item -ItemType Directory -Force `
         C:\AgentServer, `
+        C:\AgentServer\licenses, `
         C:\OpenHands, `
         C:\OpenHands\bash_events, `
         C:\OpenHands\conversations, `
         C:\OpenHands\persistence, `
+        C:\Perforce, `
+        C:\Perforce\p4mcp, `
         C:\workspace\project, `
         C:\workspace\worktrees | Out-Null; `
     icacls C:\OpenHands /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null; `
     icacls C:\workspace /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null
 
-COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:P4_URL -OutFile C:\Perforce\p4.exe; `
+    if ((Get-FileHash C:\Perforce\p4.exe -Algorithm SHA256).Hash -ne $env:P4_SHA256) { `
+        throw 'p4.exe SHA256 verification failed' `
+    }; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:P4_MCP_URL -OutFile C:\p4-mcp-server.zip; `
+    if ((Get-FileHash C:\p4-mcp-server.zip -Algorithm SHA256).Hash -ne $env:P4_MCP_SHA256) { `
+        throw 'p4-mcp-server SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\p4-mcp-server.zip -DestinationPath C:\p4-mcp-server; `
+    $mcpSource = Join-Path C:\p4-mcp-server ('p4-mcp-server-' + $env:P4_MCP_VERSION); `
+    if (-not (Test-Path (Join-Path $mcpSource 'p4-mcp-server.exe'))) { `
+        throw 'p4-mcp-server.exe was not present in the release archive' `
+    }; `
+    Copy-Item (Join-Path $mcpSource '*') C:\Perforce\p4mcp -Recurse -Force; `
+    if (-not (Test-Path C:\Perforce\p4mcp\p4-mcp-server.exe)) { `
+        throw 'p4-mcp-server.exe was not installed at the runtime path' `
+    }; `
+    Remove-Item C:\p4-mcp-server.zip, C:\p4-mcp-server -Recurse -Force; `
+    New-Item -ItemType Directory -Force C:\Perforce\p4mcp\logs | Out-Null; `
+    & C:\Perforce\p4.exe help -l legal | `
+        Out-File -Encoding utf8 C:\AgentServer\licenses\Perforce-p4-legal.txt; `
+    if ((Get-Item C:\AgentServer\licenses\Perforce-p4-legal.txt).Length -eq 0) { `
+        throw 'p4.exe did not produce its redistribution notices' `
+    }; `
+    icacls C:\Perforce /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null; `
+    icacls C:\Perforce\p4mcp\logs /grant '*S-1-5-93-2-1:(OI)(CI)M' /T /C | Out-Null
 
-ENV PATH="C:\MinGit\cmd;C:\MinGit\mingw64\bin;${PATH}" `
+COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
+COPY openhands-agent-server\openhands\agent_server\docker\PERFORCE_NOTICES.md C:\AgentServer\licenses\PERFORCE_NOTICES.md
+
+ENV PATH="C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;${PATH}" `
     LOG_JSON=true `
     OH_ACP_SKILL_SOURCING=openhands_managed `
     OH_BASH_EVENTS_DIR=C:\OpenHands\bash_events `

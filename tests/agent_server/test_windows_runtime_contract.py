@@ -126,6 +126,36 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "servercore:ltsc2025@sha256:" in dockerfile
     assert "ARG MINGIT_URL=https://github.com/git-for-windows/" in dockerfile
     assert "MINGIT_SHA256=" in dockerfile
+    assert (
+        "ARG P4_URL=https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe"
+        in dockerfile
+    )
+    assert (
+        "ARG P4_SHA256="
+        "b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b" in dockerfile
+    )
+    assert (
+        "ARG P4_MCP_URL=https://github.com/perforce/p4mcp-server/releases/"
+        "download/v2026.4.3126709/p4-mcp-server-win.zip" in dockerfile
+    )
+    assert "ARG P4_MCP_VERSION=2026.4.3126709" in dockerfile
+    assert (
+        "ARG P4_MCP_SHA256="
+        "7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879" in dockerfile
+    )
+    assert "throw 'p4.exe SHA256 verification failed'" in dockerfile
+    assert "throw 'p4-mcp-server SHA256 verification failed'" in dockerfile
+    assert "C:\\Perforce\\p4.exe" in dockerfile
+    assert "C:\\Perforce\\p4mcp\\p4-mcp-server.exe" in dockerfile
+    assert "C:\\Perforce\\p4mcp\\logs" in dockerfile
+    assert "'*S-1-5-93-2-1:(OI)(CI)RX'" in dockerfile
+    assert "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
+    assert (
+        'ENV PATH="C:\\Perforce;C:\\Perforce\\p4mcp;'
+        'C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;${PATH}"' in dockerfile
+    )
+    assert "PERFORCE_NOTICES.md" in dockerfile
+    assert "Perforce-p4-legal.txt" in dockerfile
     assert "$uri =" not in dockerfile
     assert "OH_RUNTIME_SPEC_ID=windows-server-2025-amd64" in dockerfile
     assert "OH_WORKSPACE_PATH=C:\\workspace\\project" in dockerfile
@@ -192,12 +222,15 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     assert "windows_visibility_only:" in workflow
     assert "windows_existing_reference:" in workflow
     assert (
-        "${{ inputs.windows_image }}:${{ github.sha }}"
-        "-windows-ltsc2025-amd64"
+        "${{ inputs.windows_image }}:${{ github.sha }}-windows-ltsc2025-amd64"
     ) in workflow
     assert "default: ghcr.io/openhands/agent-server" in workflow
     assert "OPENHANDS_GHCR_TOKEN" in workflow
     assert "Verify anonymous manifest pull" in workflow
     assert "/user/packages/container/${PACKAGE_NAME}" in workflow
     assert "windows-server-2025, windows-containers" in workflow
+    assert "Get-Command p4.exe -ErrorAction Stop" in workflow
+    assert "Get-Command p4-mcp-server.exe -ErrorAction Stop" in workflow
+    assert "p4.exe -V" in workflow
+    assert "p4-mcp-server.exe --help" in workflow
     assert "latest-windows" not in workflow

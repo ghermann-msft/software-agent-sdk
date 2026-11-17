@@ -17,9 +17,10 @@ docker build `
 ```
 
 The Dockerfile pins the Python builder and Windows Server Core runtime by
-manifest digest. It also pins MinGit by version and SHA-256. Updating any of
-these inputs is an explicit image-contract change. Production deployments must
-pin the resulting image digest rather than a mutable tag.
+manifest digest. It also pins MinGit, the official Helix Core command-line
+client, and the official P4 MCP Server Windows release by URL and SHA-256.
+Updating any of these inputs is an explicit image-contract change. Production
+deployments must pin the resulting image digest rather than a mutable tag.
 
 Linux and hosted Windows CI validate the Dockerfile contract, build the Windows
 PyInstaller executable, and exercise the Windows terminal/file behavior. A real
@@ -70,8 +71,22 @@ Mount `C:\workspace` for project files; conversations start in
 `C:\workspace\project` and git worktrees live in `C:\workspace\worktrees`.
 Mount `C:\OpenHands` for conversations, settings, and bash events. This keeps
 high-I/O checkout data separate from easily mounted durable metadata. Git for
-Windows is on `PATH`. Browser and VSCode capabilities are intentionally absent
-from this first minimal slice.
+Windows, `p4.exe`, and `p4-mcp-server.exe` are on `PATH` for `ContainerUser`.
+The MCP server's log directory is writable without granting write access to the
+executables. Browser and VSCode capabilities are intentionally absent from this
+first minimal slice.
+
+The image includes:
+
+| Tool | Version/source | SHA-256 |
+|---|---|---|
+| `p4.exe` | [Helix Core CLI 2025.2 Windows x64](https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe) | `b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b` |
+| `p4-mcp-server.exe` | [P4 MCP Server 2026.4.3126709 Windows release](https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip) | `7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879` |
+
+Perforce redistribution and dependency notices are stored at
+`C:\AgentServer\licenses`. The checked-in source notice is
+[`PERFORCE_NOTICES.md`](PERFORCE_NOTICES.md); the image build also records the
+client's complete `p4 help -l legal` output as `Perforce-p4-legal.txt`.
 
 The Linux image follows the same split: `/workspace`, `/workspace/project`, and
 `/workspace/worktrees` are high-performance workspace paths; `/openhands`,

@@ -493,6 +493,21 @@ jobs:
                       ) {
                           throw 'Required Windows runtime capabilities are missing.'
                       }
+
+                      $toolCheckCommand = @(
+                          'Get-Command p4.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command p4-mcp-server.exe -ErrorAction Stop | Out-Null'
+                          'p4.exe -V'
+                          'p4-mcp-server.exe --help | Select-Object -First 1'
+                      ) -join '; '
+                      docker exec $containerName powershell `
+                        -NoLogo `
+                        -NoProfile `
+                        -NonInteractive `
+                        -Command $toolCheckCommand
+                      if ($LASTEXITCODE -ne 0) {
+                          throw 'Required Perforce executables are unavailable to ContainerUser.'
+                      }
                   } finally {
                       docker logs $containerName
                       docker rm --force $containerName

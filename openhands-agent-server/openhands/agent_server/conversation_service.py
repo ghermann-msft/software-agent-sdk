@@ -30,6 +30,7 @@ from openhands.agent_server.experimental_features import (
     experimental_feature_tools,
     host_experimental_features,
 )
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
@@ -611,6 +612,7 @@ class ConversationService:
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True
+    hindsight_memory: HindsightMemorySpec | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -2559,6 +2561,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            hindsight_memory=config.hindsight_memory,
         )
 
     async def _start_event_service(
@@ -2592,6 +2595,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            hindsight_memory=self.hindsight_memory,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.

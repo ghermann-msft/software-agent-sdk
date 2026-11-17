@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import sys
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,16 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
+from openhands.sdk.context.memory_provider import (
+    ADAPTIVE_RECALL_TOKEN_BUDGET,
+    AUTOMATIC_RECALL_TOKEN_BUDGET,
+    MemoryProvider,
+    MemoryRecallRequest,
+    MemoryRecallResult,
+    create_memory_tools,
+    format_recall_context,
+    is_materially_changed_query,
+)
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -273,6 +284,9 @@ class LocalConversation(BaseConversation):
     _late_mcp_ready: list[threading.Event]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
+    _memory_provider: MemoryProvider | None
+    _last_memory_query: str | None
+    _memory_lock: threading.Lock
 
     def __init__(
         self,
@@ -313,6 +327,7 @@ class LocalConversation(BaseConversation):
         mcp_startup_budget: float | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        memory_provider: MemoryProvider | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -398,6 +413,9 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._step_holds_state_lock = False
+        self._memory_provider = memory_provider
+        self._last_memory_query = None
+        self._memory_lock = threading.Lock()
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -1042,6 +1060,7 @@ class LocalConversation(BaseConversation):
                 # secrets encrypted rather than redacted (#5465).
                 cipher=self._cipher,
                 _parent_llm_call_context=self._llm_call_context,
+                memory_provider=self._memory_provider,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -2035,11 +2054,20 @@ class LocalConversation(BaseConversation):
             self._register_file_based_agents()
 
             runtime_mcp_tools: list[ToolDefinition] = []
+            runtime_memory_tools: list[ToolDefinition] = []
             try:
                 if self.agent.supports_openhands_tools:
                     self.agent._initialize(self._state)
                     runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
                     self.agent.add_runtime_tools(runtime_mcp_tools)
+                    if self._memory_is_enabled():
+                        memory_provider = self._memory_provider
+                        assert memory_provider is not None
+                        runtime_memory_tools = create_memory_tools(
+                            memory_provider,
+                            self._state.id,
+                        )
+                        self.agent.add_runtime_tools(runtime_memory_tools)
 
                 self.agent.init_state(
                     self._state,
@@ -2053,7 +2081,7 @@ class LocalConversation(BaseConversation):
                 if self._hook_processor is not None:
                     self._hook_processor.inject_pending_additional_context()
             except Exception:
-                self._close_runtime_tools(runtime_mcp_tools)
+                self._close_runtime_tools([*runtime_mcp_tools, *runtime_memory_tools])
                 raise
 
             # Register LLMs in the registry (still holding lock).
@@ -2079,6 +2107,50 @@ class LocalConversation(BaseConversation):
         avoids HTTP client read timeouts on the remote conversation endpoint.
         """
         return not isinstance(self.agent, ACPAgent)
+
+    def _memory_is_enabled(self) -> bool:
+        return (
+            self._memory_provider is not None
+            and sys.platform.startswith("linux")
+            and not isinstance(self.agent, ACPAgent)
+        )
+
+    def _recall_memory_for_message(self, message: Message) -> str | None:
+        if not self._memory_is_enabled():
+            return None
+
+        query = "\n".join(content_to_str(message.content)).strip()
+        if not query:
+            return None
+        with self._memory_lock:
+            if self._last_memory_query is None:
+                reason = "new_task"
+                max_tokens = AUTOMATIC_RECALL_TOKEN_BUDGET
+            elif is_materially_changed_query(self._last_memory_query, query):
+                reason = "material_change"
+                max_tokens = ADAPTIVE_RECALL_TOKEN_BUDGET
+            else:
+                return None
+
+            self._last_memory_query = query
+            provider = self._memory_provider
+            assert provider is not None
+            try:
+                result = provider.recall(
+                    MemoryRecallRequest(
+                        conversation_id=self._state.id,
+                        query=query,
+                        max_tokens=max_tokens,
+                        reason=reason,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Long-term memory recall failed; continuing without memory",
+                    exc_info=True,
+                )
+                result = MemoryRecallResult.unavailable()
+        return format_recall_context(result, max_tokens=max_tokens)
 
     def get_llm_call_context(self) -> LLMCallContext:
         """Return the immutable LLM call context owned by this conversation.
@@ -2369,6 +2441,7 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
+        memory_context = self._recall_memory_for_message(message)
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -2381,6 +2454,8 @@ class LocalConversation(BaseConversation):
 
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
+            if memory_context:
+                extended_content.append(TextContent(text=memory_context))
 
             # Handle per-turn user message (i.e., knowledge agent trigger)
             if self.agent.agent_context:

@@ -20,6 +20,10 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.hindsight_memory import (
+    HindsightBrokerMemoryProvider,
+    HindsightMemorySpec,
+)
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -279,6 +283,7 @@ class EventService:
     initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
+    hindsight_memory: HindsightMemorySpec | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
         default_factory=dict
     )
@@ -1453,6 +1458,11 @@ class EventService:
             observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
             mcp_startup_budget=MCP_STARTUP_BUDGET_SECONDS,
+            memory_provider=(
+                HindsightBrokerMemoryProvider(self.hindsight_memory)
+                if self.hindsight_memory is not None
+                else None
+            ),
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)

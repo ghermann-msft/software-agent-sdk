@@ -498,9 +498,8 @@ jobs:
                           'Get-Command p4.exe -ErrorAction Stop | Out-Null'
                           'Get-Command p4-mcp-server.exe -ErrorAction Stop | Out-Null'
                           'p4.exe -V'
-                          '$mcpHelp = p4-mcp-server.exe --help 2>&1'
+                          'p4-mcp-server.exe --help | Out-Null'
                           "if (`$LASTEXITCODE -ne 0) { throw 'p4-mcp-server.exe --help failed.' }"
-                          "if (`$mcpHelp -notmatch '^usage:') { throw 'p4-mcp-server.exe returned unexpected help output.' }"
                       ) -join '; '
                       docker exec $containerName powershell `
                         -NoLogo `

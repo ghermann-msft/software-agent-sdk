@@ -154,6 +154,22 @@ def test_conversation_factory_forwards_remote_user_id_to_create_payload(
     assert payload["observability_span_name"] == "pr_review_evaluation"
 
 
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_forwards_remote_organization_id_to_create_payload(
+    mock_ws_client, agent, remote_workspace
+):
+    conversation = Conversation(
+        agent=agent,
+        workspace=remote_workspace,
+        organization_id="org-halo-studios",
+    )
+
+    assert isinstance(conversation, RemoteConversation)
+    assert conversation.organization_id == "org-halo-studios"
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.kwargs["json"]["organization_id"] == "org-halo-studios"
+
+
 def test_conversation_factory_string_workspace_creates_local(agent):
     """Test that string workspace creates LocalConversation."""
     conversation = Conversation(agent=agent, workspace="")

@@ -123,6 +123,30 @@ def test_hindsight_provider_degrades_invalid_response_to_unavailable(
     assert result.content is None
 
 
+def test_hindsight_spec_exposes_one_trusted_active_organization() -> None:
+    spec = HindsightMemorySpec(
+        broker_url="http://memory-broker:8080",
+        identity="identity-1",
+        scope=[
+            MemoryScope(type="server", id="deployment-1"),
+            MemoryScope(type="organization", id="org-personal-user-1"),
+            MemoryScope(type="private_user", id="user-1"),
+        ],
+    )
+
+    assert spec.organization_id == "org-personal-user-1"
+
+    with pytest.raises(ValueError, match="only one active organization"):
+        HindsightMemorySpec(
+            broker_url="http://memory-broker:8080",
+            identity="identity-1",
+            scope=[
+                MemoryScope(type="organization", id="org-personal-user-1"),
+                MemoryScope(type="organization", id="org-halo-studios"),
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_event_service_wires_hindsight_provider_to_local_conversation(
     tmp_path,

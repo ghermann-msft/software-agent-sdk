@@ -786,6 +786,7 @@ class RemoteConversation(BaseConversation):
     _terminal_status_queue: Queue[str]
     _run_armed: threading.Event
     delete_on_close: bool = False
+    organization_id: str | None
 
     def __init__(
         self,
@@ -808,6 +809,7 @@ class RemoteConversation(BaseConversation):
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        organization_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
@@ -846,6 +848,8 @@ class RemoteConversation(BaseConversation):
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
             user_id: Optional user ID to associate with observability traces
+            organization_id: Opaque active OpenHands organization ID resolved by
+                      the hosting control plane.
             client_tools: Optional list of client-defined tool specs. These tools
                       have no server-side executor — when the agent calls them an
                       ActionEvent is emitted over the WebSocket and the client
@@ -893,6 +897,14 @@ class RemoteConversation(BaseConversation):
             else:
                 info = resp.json()
                 initial_state = info
+                stored_organization_id = info.get("organization_id")
+                if (
+                    organization_id is not None
+                    and stored_organization_id != organization_id
+                ):
+                    raise ValueError(
+                        "Existing conversation belongs to a different organization"
+                    )
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
@@ -955,6 +967,7 @@ class RemoteConversation(BaseConversation):
                 "observability_span_name": observability_span_name,
                 "observability_parent_span_context": observability_parent_span_context,
                 "user_id": user_id,
+                "organization_id": organization_id,
             }
             if user_id:
                 payload["user_id"] = user_id
@@ -992,6 +1005,11 @@ class RemoteConversation(BaseConversation):
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
+        self.organization_id = (
+            initial_state["organization_id"]
+            if initial_state is not None and "organization_id" in initial_state
+            else organization_id
+        )
         # Register the conversation's tools before connecting so that events
         # synced during ``_initialize_connection`` can be deserialized. ``_from_info``
         # does the same for the ``attach``/``create`` entry points.
@@ -1117,6 +1135,7 @@ class RemoteConversation(BaseConversation):
     ) -> Self:
         _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
+        conversation.organization_id = info.get("organization_id")
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),
             workspace=workspace,

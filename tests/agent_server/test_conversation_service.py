@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    InvalidOrganization,
     UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
@@ -29,6 +30,7 @@ from openhands.agent_server.conversation_service import (
     _plan_conversation_worktree,
 )
 from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -40,6 +42,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.context.memory_provider import MemoryScope
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
@@ -162,6 +165,40 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_trusted_organization_is_persisted_and_caller_cannot_override(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    hindsight_memory = HindsightMemorySpec(
+        broker_url="http://memory-broker:8080",
+        identity="identity-1",
+        scope=[
+            MemoryScope(type="server", id="deployment-1"),
+            MemoryScope(type="organization", id="org-halo-studios"),
+        ],
+    )
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        hindsight_memory=hindsight_memory,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+        assert info.organization_id == "org-halo-studios"
+        meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+        assert meta["organization_id"] == "org-halo-studios"
+
+        with pytest.raises(InvalidOrganization):
+            await service.start_conversation(
+                request.model_copy(update={"organization_id": "org-personal-user-1"})
+            )
 
 
 @pytest.mark.asyncio

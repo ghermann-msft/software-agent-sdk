@@ -255,6 +255,13 @@ class _ConversationInfoBase(BaseModel):
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
     )
+    organization_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Opaque active OpenHands organization ID persisted with the conversation."
+        ),
+    )
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

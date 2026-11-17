@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.context.memory_provider import (
     MemoryProvider,
@@ -44,6 +44,22 @@ class HindsightMemorySpec(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("broker_url must be an absolute HTTP(S) URL")
         return value
+
+    @model_validator(mode="after")
+    def validate_active_organization(self) -> HindsightMemorySpec:
+        organization_scopes = [
+            scope for scope in self.scope if scope.type == "organization"
+        ]
+        if len(organization_scopes) > 1:
+            raise ValueError("scope may contain only one active organization")
+        return self
+
+    @property
+    def organization_id(self) -> str | None:
+        return next(
+            (scope.id for scope in self.scope if scope.type == "organization"),
+            None,
+        )
 
 
 class HindsightBrokerMemoryProvider(MemoryProvider):

@@ -21,6 +21,7 @@ from openhands.agent_server._secrets_exposure import (
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    InvalidOrganization,
     InvalidParentConversation,
     UnavailableAgentTool,
 )
@@ -352,7 +353,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidOrganization, InvalidParentConversation, UnavailableAgentTool) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:

@@ -341,6 +341,10 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
+class InvalidOrganization(ValueError):
+    """The requested organization conflicts with trusted control-plane context."""
+
+
 class UnavailableAgentTool(ValueError):
     """The agent names a tool whose ``tool_module_qualnames`` module the server
     cannot import, so the agent could never be built."""
@@ -427,6 +431,7 @@ def _compose_conversation_info(
     return ConversationInfo(
         **state.model_dump(mode="json", context={"use_snapshot": True}),
         title=stored.title,
+        organization_id=stored.organization_id,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
@@ -1443,6 +1448,10 @@ class ConversationService:
             else None
         )
         if stored is not None:
+            if stored.organization_id != request.organization_id:
+                raise InvalidOrganization(
+                    "Existing conversation belongs to a different organization"
+                )
             request = request.model_copy(
                 update={
                     "secrets": {
@@ -1580,6 +1589,20 @@ class ConversationService:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ServiceInactive()
+        trusted_organization_id = (
+            self.hindsight_memory.organization_id
+            if self.hindsight_memory is not None
+            else None
+        )
+        if trusted_organization_id is not None:
+            if request.organization_id not in (None, trusted_organization_id):
+                raise InvalidOrganization(
+                    "Conversation organization_id does not match trusted "
+                    "control-plane context"
+                )
+            request = request.model_copy(
+                update={"organization_id": trusted_organization_id}
+            )
         conversation_id = request.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
@@ -1620,6 +1643,11 @@ class ConversationService:
                 raise InvalidParentConversation(
                     f"Parent conversation {request.parent_conversation_id} belongs "
                     f"to a different workspace"
+                )
+            if parent_record.stored.organization_id != request.organization_id:
+                raise InvalidOrganization(
+                    f"Parent conversation {request.parent_conversation_id} belongs "
+                    "to a different organization"
                 )
 
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")

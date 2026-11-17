@@ -235,4 +235,5 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     assert "Get-Command p4-mcp-server.exe -ErrorAction Stop" in workflow
     assert "p4.exe -V" in workflow
     assert "p4-mcp-server.exe --help" in workflow
+    assert "Select-Object -First 1" not in workflow
     assert "latest-windows" not in workflow

@@ -21,6 +21,7 @@ from openhands.agent_server._secrets_exposure import (
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    InvalidOrganization,
     InvalidParentConversation,
     UnavailableAgentTool,
 )
@@ -35,6 +36,7 @@ from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddMCPServersRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -78,6 +80,7 @@ from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -350,7 +353,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidOrganization, InvalidParentConversation, UnavailableAgentTool) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -522,6 +525,33 @@ async def resume_goal_in_conversation(
             raise Conflict("Conversation run or goal loop already running.")
         raise Invalid(message)
 
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/mcp",
+    responses=error_responses(
+        {NotFound: "Item not found", Invalid: "Invalid MCP server update"}
+    ),
+)
+async def add_conversation_mcp_servers(
+    conversation_id: UUID,
+    request: AddMCPServersRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> Success:
+    """Add modern MCP servers to one conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    mcp_servers = {
+        name: server.with_decrypted_secrets(cipher=cipher)
+        for name, server in request.mcp_servers.items()
+    }
+    try:
+        await event_service.add_mcp_servers(mcp_servers)
+    except (ValueError, MCPServerStartError) as exc:
+        raise Invalid(str(exc)) from exc
     return Success()
 
 
@@ -926,7 +956,7 @@ async def navigate_conversation(
         )
     except ValueError as exc:
         # An unknown ``event_id`` against an existing conversation is a 404;
-        # other ValueErrors (e.g. inactive_service) are genuine server errors.
+        # other ValueErrors (e.g. ServiceInactive) are genuine server errors.
         if "event_id" in str(exc):
             raise NotFound(str(exc)) from exc
         raise

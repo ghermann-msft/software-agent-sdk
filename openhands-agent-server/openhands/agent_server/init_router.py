@@ -44,6 +44,7 @@ from openhands.agent_server.conversation_registry import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_config
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.persistence import (
     ServerStores,
     reencrypt_stale_stores,
@@ -182,6 +183,13 @@ class InitRequest(BaseModel):
             "a deployment that expects telemetry must supply it here."
         ),
     )
+    hindsight_memory: HindsightMemorySpec | None = Field(
+        default=None,
+        description=(
+            "Trusted broker endpoint plus deterministic identity and typed scope "
+            "for long-term-memory reads. Contains no Hindsight credentials."
+        ),
+    )
 
 
 class InitStatus(BaseModel):
@@ -232,6 +240,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["max_concurrent_runs"] = req.max_concurrent_runs
     if req.telemetry is not None:
         updates["telemetry"] = req.telemetry
+    if req.hindsight_memory is not None:
+        updates["hindsight_memory"] = req.hindsight_memory
     return base.model_copy(update=updates)
 
 

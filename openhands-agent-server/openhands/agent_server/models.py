@@ -31,6 +31,7 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
 )
@@ -253,6 +254,13 @@ class _ConversationInfoBase(BaseModel):
 
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
+    )
+    organization_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Opaque active OpenHands organization ID persisted with the conversation."
+        ),
     )
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -507,6 +515,15 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class AddMCPServersRequest(BaseModel):
+    """Payload to add modern MCP servers to a running conversation."""
+
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="MCP servers to add to this conversation by server name.",
+    )
 
 
 class UpdateSecretsRequest(BaseModel):

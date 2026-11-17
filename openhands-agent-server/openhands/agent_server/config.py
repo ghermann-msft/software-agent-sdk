@@ -24,6 +24,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.telemetry_types import DeploymentKind
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
@@ -533,6 +534,14 @@ class Config(BaseModel):
         description=(
             "Product-analytics policy. Disabled by default; see TelemetrySpec. "
             "Distinct from LLM completion logging and from Laminar/OTel tracing."
+        ),
+    )
+    hindsight_memory: HindsightMemorySpec | None = Field(
+        default=None,
+        description=(
+            "Deployment-owned trusted-broker configuration for Linux OpenHands "
+            "long-term-memory recall. The broker owns Hindsight credentials and "
+            "authorization; this configuration contains neither."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import sys
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,16 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
+from openhands.sdk.context.memory_provider import (
+    ADAPTIVE_RECALL_TOKEN_BUDGET,
+    AUTOMATIC_RECALL_TOKEN_BUDGET,
+    MemoryProvider,
+    MemoryRecallRequest,
+    MemoryRecallResult,
+    create_memory_tools,
+    format_recall_context,
+    is_materially_changed_query,
+)
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -61,6 +72,7 @@ from openhands.sdk.event.ask_user import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.message_edit import message_text
 from openhands.sdk.event.reaction import (
     check_reaction_emoji,
     find_reaction_target,
@@ -86,6 +98,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.exceptions import MCPError, MCPServerStartError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -135,6 +148,7 @@ from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
+    redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
 )
@@ -270,6 +284,9 @@ class LocalConversation(BaseConversation):
     _late_mcp_ready: list[threading.Event]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
+    _memory_provider: MemoryProvider | None
+    _last_memory_query: str | None
+    _memory_lock: threading.Lock
 
     def __init__(
         self,
@@ -310,6 +327,7 @@ class LocalConversation(BaseConversation):
         mcp_startup_budget: float | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        memory_provider: MemoryProvider | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -395,6 +413,9 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._step_holds_state_lock = False
+        self._memory_provider = memory_provider
+        self._last_memory_query = None
+        self._memory_lock = threading.Lock()
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -541,7 +562,7 @@ class LocalConversation(BaseConversation):
         def _flush_pending_reactions(e):
             if not self._pending_reactions or not isinstance(e, ObservationBaseEvent):
                 return
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 return
             pending, self._pending_reactions = self._pending_reactions, []
             for reaction in pending:
@@ -1039,6 +1060,7 @@ class LocalConversation(BaseConversation):
                 # secrets encrypted rather than redacted (#5465).
                 cipher=self._cipher,
                 _parent_llm_call_context=self._llm_call_context,
+                memory_provider=self._memory_provider,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -1799,6 +1821,85 @@ class LocalConversation(BaseConversation):
             startup_budget=self._mcp_startup_budget,
         )
 
+    def _runtime_mcp_create_kwargs(self) -> dict[str, Any]:
+        create_kwargs: dict[str, Any] = {
+            "on_tools_changed": lambda tools: self.agent._on_mcp_tools_changed(tools)
+        }
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = self._on_mcp_tools_reconciled
+        return create_kwargs
+
+    def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
+        """Add modern MCP servers to this conversation without legacy session reuse.
+
+        Raises:
+            ValueError: The servers cannot be added (SSE transport, a name the
+                agent already has, or an agent without OpenHands MCP support).
+            MCPServerStartError: A server failed to start; nothing is added and
+                the servers already started are closed. ``server_name`` names
+                it and the original error is the ``__cause__``.
+        """
+        if not self.agent.supports_openhands_mcp:
+            raise ValueError("Runtime MCP additions require an OpenHands agent")
+        mcp_config = expand_mcp_servers(
+            dict(servers), self._state.secret_registry.get_secret_value
+        )
+        for name, server in mcp_config.items():
+            if server.effective_transport == "sse":
+                raise ValueError(
+                    f"Runtime MCP additions do not support SSE transport: {name}"
+                )
+
+        with self._state:
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            agent_ready = self._agent_ready
+
+        runtime_tools: list[ToolDefinition] = []
+        if agent_ready:
+            create_kwargs = self._runtime_mcp_create_kwargs()
+            for name, server in enabled_mcp_servers(mcp_config).items():
+                try:
+                    runtime_tools.extend(
+                        self._start_runtime_mcp_server(
+                            name, server, create_kwargs, prefixed=True
+                        )
+                    )
+                except Exception as exc:
+                    self._close_runtime_tools(runtime_tools)
+                    raise MCPServerStartError(
+                        name,
+                        f"Could not start MCP server {name}: "
+                        f"{self._mcp_start_failure_reason(exc)}",
+                    ) from exc
+
+        with self._state:
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                self._close_runtime_tools(runtime_tools)
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            updated_agent = self.agent.model_copy(
+                update={"mcp_config": {**self.agent.mcp_config, **mcp_config}}
+            )
+            try:
+                updated_agent.add_runtime_tools(runtime_tools)
+            except Exception:
+                self._close_runtime_tools(runtime_tools)
+                raise
+            self.agent = self._state.agent = updated_agent
+
+    def _mcp_start_failure_reason(self, exc: Exception) -> str:
+        """One line saying why a server did not start, without its secrets."""
+        # The client's bare "MCP Connection Failure" hides the cause, e.g. a
+        # missing executable; report the cause instead.
+        cause = exc.__cause__ if type(exc) is MCPError else None
+        lines = str(cause or exc).strip().splitlines()
+        text = lines[0] if lines else type(exc).__name__
+        return redact_text_secrets(
+            self._state.secret_registry.mask_secrets_in_output(text)
+        )
+
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
         has_invocable_skills = bool(
@@ -1953,11 +2054,20 @@ class LocalConversation(BaseConversation):
             self._register_file_based_agents()
 
             runtime_mcp_tools: list[ToolDefinition] = []
+            runtime_memory_tools: list[ToolDefinition] = []
             try:
                 if self.agent.supports_openhands_tools:
                     self.agent._initialize(self._state)
                     runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
                     self.agent.add_runtime_tools(runtime_mcp_tools)
+                    if self._memory_is_enabled():
+                        memory_provider = self._memory_provider
+                        assert memory_provider is not None
+                        runtime_memory_tools = create_memory_tools(
+                            memory_provider,
+                            self._state.id,
+                        )
+                        self.agent.add_runtime_tools(runtime_memory_tools)
 
                 self.agent.init_state(
                     self._state,
@@ -1971,7 +2081,7 @@ class LocalConversation(BaseConversation):
                 if self._hook_processor is not None:
                     self._hook_processor.inject_pending_additional_context()
             except Exception:
-                self._close_runtime_tools(runtime_mcp_tools)
+                self._close_runtime_tools([*runtime_mcp_tools, *runtime_memory_tools])
                 raise
 
             # Register LLMs in the registry (still holding lock).
@@ -1997,6 +2107,50 @@ class LocalConversation(BaseConversation):
         avoids HTTP client read timeouts on the remote conversation endpoint.
         """
         return not isinstance(self.agent, ACPAgent)
+
+    def _memory_is_enabled(self) -> bool:
+        return (
+            self._memory_provider is not None
+            and sys.platform.startswith("linux")
+            and not isinstance(self.agent, ACPAgent)
+        )
+
+    def _recall_memory_for_message(self, message: Message) -> str | None:
+        if not self._memory_is_enabled():
+            return None
+
+        query = "\n".join(content_to_str(message.content)).strip()
+        if not query:
+            return None
+        with self._memory_lock:
+            if self._last_memory_query is None:
+                reason = "new_task"
+                max_tokens = AUTOMATIC_RECALL_TOKEN_BUDGET
+            elif is_materially_changed_query(self._last_memory_query, query):
+                reason = "material_change"
+                max_tokens = ADAPTIVE_RECALL_TOKEN_BUDGET
+            else:
+                return None
+
+            self._last_memory_query = query
+            provider = self._memory_provider
+            assert provider is not None
+            try:
+                result = provider.recall(
+                    MemoryRecallRequest(
+                        conversation_id=self._state.id,
+                        query=query,
+                        max_tokens=max_tokens,
+                        reason=reason,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Long-term memory recall failed; continuing without memory",
+                    exc_info=True,
+                )
+                result = MemoryRecallResult.unavailable()
+        return format_recall_context(result, max_tokens=max_tokens)
 
     def get_llm_call_context(self) -> LLMCallContext:
         """Return the immutable LLM call context owned by this conversation.
@@ -2287,6 +2441,7 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
+        memory_context = self._recall_memory_for_message(message)
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -2299,6 +2454,8 @@ class LocalConversation(BaseConversation):
 
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
+            if memory_context:
+                extended_content.append(TextContent(text=memory_context))
 
             # Handle per-turn user message (i.e., knowledge agent trigger)
             if self.agent.agent_context:
@@ -2353,10 +2510,17 @@ class LocalConversation(BaseConversation):
         """
         checked = check_reaction_emoji(emoji)
         with self._state:
+            # The user may react to a message the agent no longer sees, so
+            # this walks the active branch back from the end, only as far as
+            # the message (or the agent's latest one), never the whole log.
             target = find_reaction_target(
-                self._state.active_branch(), target_event_id, source="user"
+                self._state.walk_back(until=target_event_id),
+                target_event_id,
+                source="user",
             )
-            ending, clipped = reaction_target_text(target)
+            ending, clipped = reaction_target_text(
+                message_text(self._state.walk_back(until=target.id), target)
+            )
             event = ReactionEvent(
                 source="user",
                 target_event_id=target.id,
@@ -2365,7 +2529,7 @@ class LocalConversation(BaseConversation):
                 target_text_ending=ending,
                 target_text_clipped=clipped,
             )
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 self._pending_reactions.append(event)
             else:
                 # Stamp here, as the log will, so the caller gets the event as
@@ -2528,6 +2692,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask(self._state.active_branch()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"
@@ -2762,6 +2928,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask(self._state.active_branch()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"

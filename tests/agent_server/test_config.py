@@ -14,7 +14,9 @@ from openhands.agent_server.config import (
     WebhookSpec,
     load_config,
 )
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.init_router import InitRequest, _build_initialized_config
+from openhands.sdk.context.memory_provider import MemoryScope
 
 
 def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_path):
@@ -52,6 +54,77 @@ def test_load_config_reads_telemetry_deployment_kind_from_env(monkeypatch, tmp_p
     monkeypatch.setenv("OH_TELEMETRY_DEPLOYMENT_KIND", "remote")
 
     assert load_config().telemetry.deployment_kind == "remote"
+
+
+def test_load_config_reads_hindsight_broker_without_service_credentials(
+    monkeypatch, tmp_path
+):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "hindsight_memory": {
+                    "broker_url": "http://memory-broker:8080",
+                    "identity": "identity-1",
+                    "scope": [
+                        {
+                            "type": "repository",
+                            "id": "OpenHands/software-agent-sdk",
+                        }
+                    ],
+                }
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
+
+    memory = load_config().hindsight_memory
+
+    assert memory is not None
+    assert memory.broker_url == "http://memory-broker:8080"
+    assert memory.identity == "identity-1"
+    assert memory.scope[0].type == "repository"
+    assert "api_key" not in type(memory).model_fields
+
+
+@pytest.mark.parametrize(
+    "organization_id",
+    ["org-personal-user-1", "org-halo-studios"],
+)
+def test_init_request_can_supply_trusted_hindsight_identity(
+    organization_id: str,
+) -> None:
+    merged = _build_initialized_config(
+        Config(deferred_init=True),
+        InitRequest(
+            hindsight_memory=HindsightMemorySpec(
+                broker_url="http://memory-broker:8080",
+                identity="identity-1",
+                scope=[
+                    MemoryScope(type="server", id="deployment-1"),
+                    MemoryScope(type="organization", id=organization_id),
+                    MemoryScope(
+                        type="repository",
+                        id="OpenHands/software-agent-sdk",
+                    ),
+                    MemoryScope(type="workspace", id="workspace-1"),
+                    MemoryScope(type="private_user", id="user-1"),
+                ],
+            )
+        ),
+    )
+
+    assert merged.hindsight_memory is not None
+    assert merged.hindsight_memory.identity == "identity-1"
+    assert merged.hindsight_memory.scope[1].id == organization_id
+    assert [scope.type for scope in merged.hindsight_memory.scope] == [
+        "server",
+        "organization",
+        "repository",
+        "workspace",
+        "private_user",
+    ]
+    assert not merged.deferred_init
 
 
 def test_conversation_idle_ttl_defaults_to_twenty_minutes():

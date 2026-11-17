@@ -71,6 +71,7 @@ export {
   isHookExecutionEvent,
   isReactionEvent,
   isAskUserAnswerEvent,
+  isMessageEditEvent,
 } from './events/types';
 export type {
   EventID,
@@ -105,6 +106,7 @@ export type {
   AskUserAction,
   AskUserObservation,
   AskUserAnswerEvent,
+  MessageEditEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -324,6 +326,18 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,

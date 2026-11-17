@@ -29,11 +29,13 @@ from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
     RunSlot,
+    ServiceInactive,
 )
 from openhands.agent_server.experimental_features import (
     experimental_feature_tools,
     host_experimental_features,
 )
+from openhands.agent_server.hindsight_memory import HindsightMemorySpec
 from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
@@ -344,6 +346,10 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
+class InvalidOrganization(ValueError):
+    """The requested organization conflicts with trusted control-plane context."""
+
+
 class UnavailableAgentTool(ValueError):
     """The agent names a tool whose ``tool_module_qualnames`` module the server
     cannot import, so the agent could never be built."""
@@ -430,6 +436,7 @@ def _compose_conversation_info(
     return ConversationInfo(
         **state.model_dump(mode="json", context={"use_snapshot": True}),
         title=stored.title,
+        organization_id=stored.organization_id,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
@@ -615,6 +622,7 @@ class ConversationService:
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True
+    hindsight_memory: HindsightMemorySpec | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -784,7 +792,7 @@ class ConversationService:
         async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             active_services = tuple(event_services.items())
             results = await asyncio.gather(
                 *(
@@ -895,7 +903,7 @@ class ConversationService:
     ) -> ConversationInfo | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         children = (
             children_index.get(conversation_id, [])
@@ -1005,7 +1013,7 @@ class ConversationService:
         """
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         targets: list[tuple[UUID, str, tuple[int, int] | None]] = []
         for conversation_id, record in list(self._conversation_records.items()):
@@ -1054,7 +1062,7 @@ class ConversationService:
         """Refresh one catalog record changed by an external runtime."""
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
         if conversation_id not in disk_records:
             event_service = event_services.get(conversation_id)
@@ -1074,7 +1082,7 @@ class ConversationService:
         """Add injected live services to the in-memory catalog."""
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         for conversation_id, event_service in event_services.items():
             if conversation_id in self._conversation_records:
                 continue
@@ -1156,7 +1164,7 @@ class ConversationService:
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         if (
             conversation_id not in event_services
             and conversation_id not in self._conversation_records
@@ -1174,7 +1182,7 @@ class ConversationService:
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
@@ -1209,7 +1217,7 @@ class ConversationService:
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)
@@ -1275,7 +1283,7 @@ class ConversationService:
         sort_order: ConversationSortOrder,
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         await self._reconcile_active_records()
 
         if execution_status is not None:
@@ -1338,7 +1346,7 @@ class ConversationService:
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         await self._reconcile_active_records()
 
         if execution_status is None:
@@ -1434,7 +1442,7 @@ class ConversationService:
         catalog cannot change between the existence check and the reuse.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)
         stored = (
@@ -1445,6 +1453,10 @@ class ConversationService:
             else None
         )
         if stored is not None:
+            if stored.organization_id != request.organization_id:
+                raise InvalidOrganization(
+                    "Existing conversation belongs to a different organization"
+                )
             request = request.model_copy(
                 update={
                     "secrets": {
@@ -1581,7 +1593,21 @@ class ConversationService:
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
+        trusted_organization_id = (
+            self.hindsight_memory.organization_id
+            if self.hindsight_memory is not None
+            else None
+        )
+        if trusted_organization_id is not None:
+            if request.organization_id not in (None, trusted_organization_id):
+                raise InvalidOrganization(
+                    "Conversation organization_id does not match trusted "
+                    "control-plane context"
+                )
+            request = request.model_copy(
+                update={"organization_id": trusted_organization_id}
+            )
         conversation_id = request.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
@@ -1622,6 +1648,11 @@ class ConversationService:
                 raise InvalidParentConversation(
                     f"Parent conversation {request.parent_conversation_id} belongs "
                     f"to a different workspace"
+                )
+            if parent_record.stored.organization_id != request.organization_id:
+                raise InvalidOrganization(
+                    f"Parent conversation {request.parent_conversation_id} belongs "
+                    "to a different organization"
                 )
 
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
@@ -1920,7 +1951,7 @@ class ConversationService:
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         if (
             conversation_id not in event_services
             and conversation_id not in self._conversation_records
@@ -2061,7 +2092,7 @@ class ConversationService:
     ) -> EventService | None:
         """Open append-only event history without acquiring a runtime lease."""
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
@@ -2126,7 +2157,7 @@ class ConversationService:
                 conversation.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         # Reject duplicate fork IDs before fork() writes into its persistence
         # directory. The catalog includes both live and unloaded conversations.
@@ -2227,7 +2258,7 @@ class ConversationService:
                 Nothing is persisted in that case.
         """
         if self._event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         parent_service = await self._get_or_load_event_service(parent_id)
         if parent_service is None:
@@ -2563,6 +2594,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            hindsight_memory=config.hindsight_memory,
         )
 
     async def _start_event_service(
@@ -2577,7 +2609,7 @@ class ConversationService:
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
-            raise ValueError("inactive_service")
+            raise ServiceInactive()
 
         # A new conversation starts with the ``launched`` agent (meta.json does
         # not carry it). Otherwise the agent is read from base_state.json, and
@@ -2596,6 +2628,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            hindsight_memory=self.hindsight_memory,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
@@ -2644,7 +2677,7 @@ class ConversationService:
             # even if the system is not shut down gracefully
             await event_service.save_meta()
             if self._event_services is not event_services:
-                raise ValueError("inactive_service")
+                raise ServiceInactive()
             state = await event_service.get_state()
         except BaseException:
             try:

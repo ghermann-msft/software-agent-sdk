@@ -13,6 +13,7 @@ from openhands.sdk.launch import (
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.profiles import resolve_agent_profile
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -62,6 +63,31 @@ def test_a_profile_object_resolves_without_being_stored():
     assert resolved.profile.agent_profile_id == draft.id
     assert stores.agent_profiles is not None
     assert stores.agent_profiles.name_for_id(draft.id) is None
+
+
+def test_profiles_public_resolver_resolves_an_openhands_profile():
+    stores = fakes.stores()
+    settings = resolve_agent_profile(
+        _profile(),
+        llm_store=stores.llm_profiles,
+        mcp_config=dict(stores.mcp_config),
+        available_skills=[],
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+
+
+def test_profiles_public_resolver_resolves_a_copilot_cli_profile():
+    stores = fakes.stores()
+    settings = resolve_agent_profile(
+        ACPAgentProfile(name="copilot", acp_server="copilot-cli"),
+        llm_store=stores.llm_profiles,
+        mcp_config=dict(stores.mcp_config),
+        available_skills=None,
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.acp_server == "copilot-cli"
 
 
 def test_every_dangling_reference_is_reported_together():

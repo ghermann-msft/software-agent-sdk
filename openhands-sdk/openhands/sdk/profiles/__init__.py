@@ -47,11 +47,36 @@ if TYPE_CHECKING:
 
     from pydantic import SecretStr
 
+    from openhands.sdk.launch import LaunchStores
     from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
     from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.settings.model import AgentSettingsConfig
     from openhands.sdk.skills import Skill
     from openhands.sdk.utils.cipher import Cipher
+
+
+def _launch_stores(
+    *,
+    llm_store: LLMProfileLoader,
+    mcp_config: dict[str, MCPServer],
+    available_skills: list[Skill] | None,
+    public_skill_names: Collection[str] | None,
+    critic_api_key: SecretStr | None,
+    cipher: Cipher | None,
+) -> LaunchStores:
+    # launch.resolve imports profile helpers, so importing it eagerly would cycle.
+    from openhands.sdk.launch import LaunchStores
+
+    return LaunchStores(
+        llm_profiles=llm_store,
+        mcp_config=mcp_config,
+        skills=lambda: list(available_skills or []),
+        public_skill_names=(
+            None if public_skill_names is None else lambda: list(public_skill_names)
+        ),
+        critic_api_key=critic_api_key,
+        cipher=cipher,
+    )
 
 
 def resolve_agent_profile(
@@ -66,20 +91,15 @@ def resolve_agent_profile(
     browser_available: bool | None = None,
 ) -> AgentSettingsConfig:
     """Resolve an Agent Profile through the canonical launch pipeline."""
-    # launch.resolve imports profile helpers, so importing it eagerly would cycle.
-    from openhands.sdk.launch import LaunchStores, resolve
+    from openhands.sdk.launch import resolve
 
     resolved = resolve(
         profile,
-        LaunchStores(
-            llm_profiles=llm_store,
+        _launch_stores(
+            llm_store=llm_store,
             mcp_config=mcp_config,
-            skills=lambda: list(available_skills or []),
-            public_skill_names=(
-                None
-                if public_skill_names is None
-                else lambda: list(public_skill_names)
-            ),
+            available_skills=available_skills,
+            public_skill_names=public_skill_names,
             critic_api_key=critic_api_key,
             cipher=cipher,
         ),
@@ -95,6 +115,41 @@ def resolve_agent_profile(
             }
         )
     return settings
+
+
+def resolve_agent_profile_dry_run(
+    profile: OpenHandsAgentProfile | ACPAgentProfile,
+    *,
+    llm_store: LLMProfileLoader,
+    mcp_config: dict[str, MCPServer],
+    available_skills: list[Skill] | None,
+    public_skill_names: Collection[str] | None = None,
+    critic_api_key: SecretStr | None = None,
+    cipher: Cipher | None = None,
+    browser_available: bool | None = None,
+    check_usable: bool = True,
+) -> AgentProfileDiagnostics:
+    """Preview Agent Profile resolution through the canonical launch pipeline."""
+    from openhands.sdk.launch import LaunchRuntime, preview_launch
+
+    return preview_launch(
+        profile,
+        _launch_stores(
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=available_skills,
+            public_skill_names=public_skill_names,
+            critic_api_key=critic_api_key,
+            cipher=cipher,
+        ),
+        LaunchRuntime(
+            browser_available=(
+                False if browser_available is None else browser_available
+            ),
+            acp_skill_sourcing="openhands_managed",
+        ),
+        check_usable=check_usable,
+    )
 
 
 __all__ = [
@@ -121,6 +176,7 @@ __all__ = [
     "find_referrers",
     "rename_llm_profile",
     "resolve_agent_profile",
+    "resolve_agent_profile_dry_run",
     "safe_validation_error_detail",
     "save_profile_preserving_identity",
     "validate_agent_profile",

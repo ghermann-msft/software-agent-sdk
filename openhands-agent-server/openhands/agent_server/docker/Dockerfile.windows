@@ -90,6 +90,7 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:NODE_URL -OutFile C:\node.zip; 
     }; `
     Copy-Item (Join-Path $nodeSource '*') C:\Node -Recurse -Force; `
     Remove-Item C:\node-extract -Recurse -Force; `
+    $env:Path = 'C:\Node;' + $env:Path; `
     $nodeVersion = & C:\Node\node.exe --version; `
     if ($LASTEXITCODE -ne 0 -or $nodeVersion.Trim() -ne ('v' + $env:NODE_VERSION)) { `
         throw ('Unexpected Node.js version: ' + $nodeVersion) `

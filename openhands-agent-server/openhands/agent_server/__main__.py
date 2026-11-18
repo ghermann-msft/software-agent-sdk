@@ -277,8 +277,38 @@ def main() -> None:
             f"{_EXTRA_PYTHON_PATH_ENV} environment variable."
         ),
     )
+    parser.add_argument(
+        "--mcp-azure-workload-identity-bridge",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-azure-bridge-url",
+        dest="mcp_bridge_url",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-azure-bridge-scope",
+        dest="mcp_bridge_scope",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
+
+    if args.mcp_azure_workload_identity_bridge:
+        if args.mcp_bridge_url is None:
+            parser.error("--mcp-azure-bridge-url is required for the Azure MCP bridge")
+        from openhands.sdk.mcp.azure_stdio_bridge import (
+            run_azure_workload_identity_bridge,
+        )
+
+        bridge_kwargs = {"url": args.mcp_bridge_url}
+        if args.mcp_bridge_scope is not None:
+            bridge_kwargs["scope"] = args.mcp_bridge_scope
+        run_azure_workload_identity_bridge(**bridge_kwargs)
+        return
 
     # Handle browser check (should run without importing user modules)
     if args.check_browser:

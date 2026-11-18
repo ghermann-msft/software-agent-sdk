@@ -9024,6 +9024,8 @@ class TestMcpConfigToAcpServers:
         ]
 
     def test_azure_workload_identity_is_not_forwarded_as_static_auth(self):
+        from acp.schema import McpServerStdio
+
         cfg = {
             "mcpServers": {
                 "remote": {
@@ -9037,7 +9039,10 @@ class TestMcpConfigToAcpServers:
             self._config(cfg), self._caps(http=True, sse=False)
         )
 
-        assert out[0].headers == []
+        assert isinstance(out[0], McpServerStdio)
+        payload = out[0].model_dump_json()
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
 
     def test_sse_gated_on_capability(self):
         from acp.schema import SseMcpServer
@@ -9069,6 +9074,69 @@ class TestMcpConfigToAcpServers:
         )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
+
+    def test_azure_workload_identity_maps_to_local_stdio_bridge(self):
+        from acp.schema import McpServerStdio
+
+        cfg = {
+            "mcpServers": {
+                "foundry-web-search": {
+                    "url": "https://foundry.example.com/mcp",
+                    "transport": "streamable-http",
+                    "auth": {
+                        "strategy": "azure_workload_identity",
+                        "scope": "api://foundry/.default",
+                    },
+                }
+            }
+        }
+
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=False, sse=False)
+        )
+
+        assert len(out) == 1
+        server = out[0]
+        assert isinstance(server, McpServerStdio)
+        assert server.name == "foundry-web-search"
+        assert server.command == acp_agent_module.sys.executable
+        assert server.args == [
+            "-m",
+            "openhands.sdk.mcp.azure_stdio_bridge",
+            "--url",
+            "https://foundry.example.com/mcp",
+            "--scope",
+            "api://foundry/.default",
+        ]
+        payload = server.model_dump_json()
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
+
+    def test_azure_bridge_uses_packaged_agent_server_executable(self):
+        cfg = self._config(
+            {
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        )
+
+        with patch.object(
+            acp_agent_module.sys,
+            "executable",
+            "/usr/local/bin/openhands-agent-server",
+        ):
+            out = _mcp_config_to_acp_servers(
+                cfg,
+                self._caps(http=False, sse=False),
+            )
+
+        assert out[0].command == "/usr/local/bin/openhands-agent-server"
+        assert out[0].args[:2] == [
+            "--mcp-azure-workload-identity-bridge",
+            "--mcp-azure-bridge-url",
+        ]
 
     def test_disabled_servers_not_forwarded(self):
         cfg = {
@@ -9138,6 +9206,25 @@ class TestACPMcpForwarding:
         servers = conn.load_session.call_args.kwargs["mcp_servers"]
         assert [s.name for s in servers] == ["fetch"]
         conn.new_session.assert_not_awaited()
+
+    def test_resume_recreates_azure_workload_identity_bridge(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        conn = self._conn_with_caps(http=False, sse=False)
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        servers = conn.load_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["foundry"]
+        assert servers[0].command == acp_agent_module.sys.executable
 
     def test_no_mcp_config_forwards_empty_acp_mcp_servers_list(self, tmp_path):
         agent = _make_agent()

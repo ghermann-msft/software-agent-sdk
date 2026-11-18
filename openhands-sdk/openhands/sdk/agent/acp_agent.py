@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -128,7 +129,11 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
+from openhands.sdk.mcp.config import (
+    MCPAzureWorkloadIdentityAuthCredential,
+    MCPOAuthAuthCredential,
+    MCPServer,
+)
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -820,6 +825,36 @@ def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
     return headers
 
 
+def _azure_workload_identity_bridge_server(
+    name: str,
+    server: MCPServer,
+    auth: MCPAzureWorkloadIdentityAuthCredential,
+) -> McpServerStdio:
+    assert server.url is not None
+    bridge_args = ["--url", server.url, "--scope", auth.scope]
+    executable_name = Path(sys.executable).name
+    if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
+        args = [
+            "--mcp-azure-workload-identity-bridge",
+            "--mcp-azure-bridge-url",
+            server.url,
+            "--mcp-azure-bridge-scope",
+            auth.scope,
+        ]
+    else:
+        args = [
+            "-m",
+            "openhands.sdk.mcp.azure_stdio_bridge",
+            *bridge_args,
+        ]
+    return McpServerStdio(
+        name=name,
+        command=sys.executable,
+        args=args,
+        env=[],
+    )
+
+
 def _mcp_config_to_acp_servers(
     mcp_config: dict[str, MCPServer],
     mcp_capabilities: Any,
@@ -840,6 +875,9 @@ def _mcp_config_to_acp_servers(
 
     - ``command`` present → :class:`McpServerStdio` (always forwarded; the
       protocol gates only the remote transports behind a capability flag).
+    - ``url`` with Azure workload-identity auth → local
+      :class:`McpServerStdio` bridge. The bridge owns the remote transport and
+      token lifecycle, so no credential enters the ACP payload.
     - ``url`` present, transport ``sse`` → :class:`SseMcpServer`, forwarded only
       when the server advertises ``mcp_capabilities.sse``.
     - ``url`` present, any other / absent transport → :class:`HttpMcpServer`
@@ -874,6 +912,15 @@ def _mcp_config_to_acp_servers(
                 )
             )
         elif server.url:
+            if isinstance(server.auth, MCPAzureWorkloadIdentityAuthCredential):
+                result.append(
+                    _azure_workload_identity_bridge_server(
+                        name,
+                        server,
+                        server.auth,
+                    )
+                )
+                continue
             headers = _remote_mcp_headers(server, name)
             is_sse = server.effective_transport == "sse"
             if not (sse_ok if is_sse else http_ok):

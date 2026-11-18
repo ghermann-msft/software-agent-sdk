@@ -1,12 +1,19 @@
 from unittest.mock import Mock, call, patch
 
 import httpx2
+import mcp.types
 import pytest
 from azure.core.credentials import AccessToken
+from fastmcp import Client, FastMCP
 from fastmcp.mcp_config import RemoteMCPServer
 from pydantic import ValidationError
 
 from openhands.sdk.mcp.azure import AzureWorkloadIdentityAuth
+from openhands.sdk.mcp.azure_stdio_bridge import (
+    _create_stdio_proxy,
+    create_azure_workload_identity_bridge,
+    run_azure_workload_identity_bridge,
+)
 from openhands.sdk.mcp.config import (
     AZURE_AI_SCOPE,
     MCPAzureWorkloadIdentityAuthCredential,
@@ -98,6 +105,37 @@ def test_azure_workload_identity_auth_does_not_follow_another_origin() -> None:
 
     assert "Authorization" not in request.headers
     credential_factory.assert_not_called()
+
+
+def test_azure_workload_identity_auth_drops_token_on_cross_origin_redirect() -> None:
+    credential = Mock()
+    credential.get_token.return_value = AccessToken("redirect-token", 1000)
+    auth = AzureWorkloadIdentityAuth(
+        FOUNDRY_MCP_URL,
+        AZURE_AI_SCOPE,
+        credential_factory=Mock(return_value=credential),
+        time_fn=lambda: 0,
+    )
+    requests: list[httpx2.Request] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx2.Response(
+                302,
+                headers={"Location": "https://redirected.example.com/mcp"},
+            )
+        return httpx2.Response(200)
+
+    with httpx2.Client(
+        auth=auth,
+        transport=httpx2.MockTransport(handle),
+        follow_redirects=True,
+    ) as client:
+        client.post(FOUNDRY_MCP_URL)
+
+    assert requests[0].headers["Authorization"] == "Bearer redirect-token"
+    assert "Authorization" not in requests[1].headers
 
 
 @pytest.mark.asyncio
@@ -218,3 +256,47 @@ def test_azure_workload_identity_credential_is_closed_with_client(
     cleanup = client_class.return_value._add_cleanup_callback.call_args.args[0]
     assert cleanup.__self__ is runtime_auth
     assert cleanup.__func__ is AzureWorkloadIdentityAuth.close
+
+
+@pytest.mark.asyncio
+async def test_stdio_proxy_discovers_and_invokes_upstream_tool() -> None:
+    upstream = FastMCP("upstream")
+
+    @upstream.tool
+    def echo(value: str) -> str:
+        return value
+
+    bridge = _create_stdio_proxy(upstream)
+    async with Client(bridge) as client:
+        tools = await client.list_tools()
+        result = await client.call_tool("echo", {"value": "through-bridge"})
+
+    assert [tool.name for tool in tools] == ["echo"]
+    content = result.content[0]
+    assert isinstance(content, mcp.types.TextContent)
+    assert content.text == "through-bridge"
+
+
+def test_bridge_builder_contains_no_token_or_authorization() -> None:
+    bridge, auth = create_azure_workload_identity_bridge(
+        FOUNDRY_MCP_URL,
+        AZURE_AI_SCOPE,
+    )
+
+    assert bridge is not None
+    assert isinstance(auth, AzureWorkloadIdentityAuth)
+    assert "Authorization" not in repr(bridge)
+    assert "Bearer" not in repr(bridge)
+
+
+def test_bridge_closes_auth_when_stdio_server_stops() -> None:
+    bridge = Mock()
+    auth = Mock()
+    with patch(
+        "openhands.sdk.mcp.azure_stdio_bridge.create_azure_workload_identity_bridge",
+        return_value=(bridge, auth),
+    ):
+        run_azure_workload_identity_bridge(FOUNDRY_MCP_URL)
+
+    bridge.run.assert_called_once_with(transport="stdio", show_banner=False)
+    auth.close.assert_called_once_with()

@@ -164,6 +164,8 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "throw 'Copilot CLI SHA256 verification failed'" in dockerfile
     assert "throw 'Copilot CLI license SHA256 verification failed'" in dockerfile
     assert "throw 'PowerShell SHA256 verification failed'" in dockerfile
+    assert "C:\\PowerShell\\pwsh.exe -NoLogo -NoProfile -Version" in dockerfile
+    assert "C:\\PowerShell\\pwsh.exe -NoLogo -NoProfile -Command" not in dockerfile
     assert "C:\\Perforce\\p4.exe" in dockerfile
     assert "C:\\Perforce\\p4mcp\\p4-mcp-server.exe" in dockerfile
     assert "C:\\Perforce\\p4mcp\\logs" in dockerfile

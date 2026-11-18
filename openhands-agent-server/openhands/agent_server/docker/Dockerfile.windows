@@ -97,8 +97,10 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:POWERSHELL_URL -OutFile C:\powe
     if (-not (Test-Path C:\PowerShell\pwsh.exe)) { `
         throw 'pwsh.exe was not present in the PowerShell release archive' `
     }; `
-    & C:\PowerShell\pwsh.exe -NoLogo -NoProfile -Command `'$PSVersionTable.PSVersion.ToString()' | `
-        Select-String ('^' + [regex]::Escape($env:POWERSHELL_VERSION) + '$') | Out-Null; `
+    $version = & C:\PowerShell\pwsh.exe -NoLogo -NoProfile -Version; `
+    if ($LASTEXITCODE -ne 0 -or ($version -join ' ').Trim() -ne ('PowerShell ' + $env:POWERSHELL_VERSION)) { `
+        throw ('Unexpected PowerShell version: ' + ($version -join ' ')) `
+    }; `
     Copy-Item C:\PowerShell\LICENSE.txt C:\AgentServer\licenses\PowerShell-LICENSE.txt; `
     icacls C:\PowerShell /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null
 

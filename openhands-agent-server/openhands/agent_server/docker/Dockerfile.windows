@@ -124,7 +124,7 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:COPILOT_CLI_URL -OutFile C:\cop
         throw ('Unexpected Copilot CLI version: ' + ($version -join ' ')) `
     }; `
     $acpHelp = & C:\Copilot\copilot.exe --no-auto-update help acp; `
-    if ($LASTEXITCODE -ne 0 -or ($acpHelp -join "`n") -notmatch 'talks to it over stdio') { `
+    if ($LASTEXITCODE -ne 0 -or ($acpHelp -join ' ') -notmatch 'talks to it over stdio') { `
         throw 'Copilot CLI ACP help probe failed' `
     }; `
     icacls C:\Copilot /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null

@@ -227,7 +227,7 @@ def test_windows_workflow_smokes_every_acp_shim_and_two_acp_transports() -> None
         Path(__file__).parents[2] / ".github" / "workflows" / "server.yml"
     ).read_text(encoding="utf-8")
     smoke_script = (
-        Path(__file__).parents[2] / ".github" / "scripts" / "test_windows_acp.ps1"
+        Path(__file__).parents[2] / ".github" / "scripts" / "test_windows_acp.mjs"
     ).read_text(encoding="utf-8")
 
     for spec in ACP_INSTALL_CATALOG.values():
@@ -236,14 +236,14 @@ def test_windows_workflow_smokes_every_acp_shim_and_two_acp_transports() -> None
         )
         assert f"Get-Command {executable} -ErrorAction Stop" in workflow
 
-    assert "-Provider codex" in workflow
-    assert "-Provider copilot" in workflow
+    assert "C:\\test_windows_acp.mjs `\n                        codex" in workflow
+    assert "C:\\test_windows_acp.mjs `\n                        copilot" in workflow
     assert "throw 'Codex ACP initialize smoke failed.'" in workflow
     assert "throw 'Copilot ACP initialize smoke failed.'" in workflow
-    assert "method = 'initialize'" in smoke_script
-    assert "[int]$TimeoutSeconds = 90" in smoke_script
-    assert r"$command = 'C:\ACP\codex-acp.cmd'" in smoke_script
-    assert r"$command = 'C:\Copilot\copilot.exe'" in smoke_script
+    assert 'method: "initialize"' in smoke_script
+    assert "90_000" in smoke_script
+    assert r"C:\ACP\codex-acp.cmd" in smoke_script
+    assert r"C:\Copilot\copilot.exe" in smoke_script
 
 
 def test_openapi_exports_runtime_image_contract() -> None:

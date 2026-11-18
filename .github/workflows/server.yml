@@ -525,23 +525,17 @@ jobs:
                       }
 
                       docker cp `
-                        .github\scripts\test_windows_acp.ps1 `
-                        "${containerName}:C:\test_windows_acp.ps1"
-                      docker exec $containerName powershell `
-                        -NoLogo `
-                        -NoProfile `
-                        -NonInteractive `
-                        -File C:\test_windows_acp.ps1 `
-                        -Provider codex
+                        .github\scripts\test_windows_acp.mjs `
+                        "${containerName}:C:\test_windows_acp.mjs"
+                      docker exec $containerName node.exe `
+                        C:\test_windows_acp.mjs `
+                        codex
                       if ($LASTEXITCODE -ne 0) {
                           throw 'Codex ACP initialize smoke failed.'
                       }
-                      docker exec $containerName powershell `
-                        -NoLogo `
-                        -NoProfile `
-                        -NonInteractive `
-                        -File C:\test_windows_acp.ps1 `
-                        -Provider copilot
+                      docker exec $containerName node.exe `
+                        C:\test_windows_acp.mjs `
+                        copilot
                       if ($LASTEXITCODE -ne 0) {
                           throw 'Copilot ACP initialize smoke failed.'
                       }

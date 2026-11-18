@@ -34,6 +34,7 @@ describe('ACP provider credential descriptors', () => {
   it.each<[ACPProviderKey, string, string | null]>([
     ['claude-code', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'],
     ['codex', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
+    ['copilot-cli', 'COPILOT_GITHUB_TOKEN', null],
     ['gemini-cli', 'GEMINI_API_KEY', 'GEMINI_BASE_URL'],
     // pi reads a provider key out of the environment but resolves base URLs
     // from its own catalogue, so it has no base-URL override var.
@@ -84,6 +85,14 @@ describe('ACP provider credential descriptors', () => {
       '@agentclientprotocol/codex-acp@2.2.2',
     ]);
     expect(codex.default_session_mode).toBe('agent-full-access');
+  });
+
+  it('starts Copilot CLI in pinned stdio ACP mode without self-updating', () => {
+    const copilot = ACP_PROVIDERS['copilot-cli'];
+    expect(copilot.default_command.slice(0, 3)).toEqual(['npx', '-y', '--prefer-offline']);
+    expect(copilot.default_command[3]).toMatch(/^@github\/copilot@\d+\.\d+\.\d+$/);
+    expect(copilot.default_command.slice(4)).toEqual(['--acp', '--stdio', '--no-auto-update']);
+    expect(copilot.data_dir_env_var).toBe('COPILOT_HOME');
   });
 
   describe('file_secrets', () => {

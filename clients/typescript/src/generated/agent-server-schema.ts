@@ -358,7 +358,15 @@ export type AcpAgentProfile = {
    *
    * Which ACP-compatible backend to launch. The provider's credential env-var name is derived from this via the ACP_PROVIDERS registry.
    */
-  acp_server?: 'claude-code' | 'codex' | 'gemini-cli' | 'kimi-code' | 'pi' | 'opencode' | 'custom';
+  acp_server?:
+    | 'claude-code'
+    | 'codex'
+    | 'gemini-cli'
+    | 'kimi-code'
+    | 'pi'
+    | 'opencode'
+    | 'copilot-cli'
+    | 'custom';
   /**
    * Acp Session Mode
    *
@@ -483,7 +491,15 @@ export type AcpAgentSettings = {
    *
    * Which ACP-compatible backend to launch. Each choice maps to a default subprocess command (see ``acp_command`` to override).
    */
-  acp_server?: 'claude-code' | 'codex' | 'gemini-cli' | 'kimi-code' | 'pi' | 'opencode' | 'custom';
+  acp_server?:
+    | 'claude-code'
+    | 'codex'
+    | 'gemini-cli'
+    | 'kimi-code'
+    | 'pi'
+    | 'opencode'
+    | 'copilot-cli'
+    | 'custom';
   /**
    * Acp Session Mode
    *
@@ -16284,7 +16300,15 @@ export type AcpAgentSettingsWritable = {
    *
    * Which ACP-compatible backend to launch. Each choice maps to a default subprocess command (see ``acp_command`` to override).
    */
-  acp_server?: 'claude-code' | 'codex' | 'gemini-cli' | 'kimi-code' | 'pi' | 'opencode' | 'custom';
+  acp_server?:
+    | 'claude-code'
+    | 'codex'
+    | 'gemini-cli'
+    | 'kimi-code'
+    | 'pi'
+    | 'opencode'
+    | 'copilot-cli'
+    | 'custom';
   /**
    * Acp Session Mode
    *

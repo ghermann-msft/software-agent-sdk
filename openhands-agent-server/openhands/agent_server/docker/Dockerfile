@@ -19,7 +19,7 @@ ARG ENABLE_VERTEX=0
 # acp-providers stage below. The default reproduces the full provider set
 # shipped today (DEFAULT_PREINSTALLED_ACP_PROVIDERS); an unknown key fails the
 # build rather than silently installing nothing.
-ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli,copilot-cli
 # Comma-separated capability keys to include in the `base-image` stage below
 # (`base-image-minimal` is unaffected). The default reproduces today's full
 # contents; an unknown key fails the build. The GitHub CLI is expected to
@@ -319,6 +319,15 @@ RUN set -eux; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
+    if printf '%s\n' $WRAPPER_BINS | grep -qx copilot; then \
+      test -f "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md"; \
+      mkdir -p "$ACP_NODE_DIR/licenses"; \
+      cp "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md" \
+        "$ACP_NODE_DIR/licenses/GitHub-Copilot-CLI-LICENSE.md"; \
+      PATH="$ACP_NODE_DIR/bin:$PATH" \
+        "$ACP_NODE_DIR/bin/copilot" --no-auto-update help acp \
+        | grep -F 'talks to it over stdio'; \
+    fi; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
       # a wrong binary_name is otherwise invisible until someone launches the

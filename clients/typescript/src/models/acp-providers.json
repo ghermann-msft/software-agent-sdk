@@ -79,6 +79,40 @@
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
   },
+  "copilot-cli": {
+    "agent_name_patterns": [
+      "copilot"
+    ],
+    "api_key_env_var": "COPILOT_GITHUB_TOKEN",
+    "base_url_env_var": null,
+    "binary_name": "copilot",
+    "data_dir_env_var": "COPILOT_HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "@github/copilot@1.0.109",
+      "--acp",
+      "--stdio",
+      "--no-auto-update"
+    ],
+    "default_session_mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+    "display_name": "GitHub Copilot CLI",
+    "effort_config_id": "reasoning_effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "copilot-cli",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "gemini-cli": {
     "agent_name_patterns": [
       "gemini-cli"

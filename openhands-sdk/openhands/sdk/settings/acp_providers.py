@@ -564,6 +564,24 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # Relocating HOME is the only single lever that moves all of them.
             data_dir_env_var="HOME",
         ),
+        "copilot-cli": ACPProviderInfo(
+            key="copilot-cli",
+            display_name="GitHub Copilot CLI",
+            default_command=ACP_INSTALL_CATALOG["copilot-cli"].npx_command(),
+            api_key_env_var="COPILOT_GITHUB_TOKEN",
+            base_url_env_var=None,
+            default_session_mode=(
+                "https://agentclientprotocol.com/protocol/session-modes#agent"
+            ),
+            agent_name_patterns=("copilot",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            effort_config_id="reasoning_effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max"),
+            binary_name=ACP_INSTALL_CATALOG["copilot-cli"].binary_name,
+            data_dir_env_var="COPILOT_HOME",
+        ),
     }
 )
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""

@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 
@@ -143,15 +144,35 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
         "ARG P4_MCP_SHA256="
         "7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879" in dockerfile
     )
+    copilot_version = re.search(
+        r"(?m)^ARG COPILOT_CLI_VERSION=(\d+\.\d+\.\d+)$", dockerfile
+    )
+    assert copilot_version
+    assert (
+        "ARG COPILOT_CLI_URL=https://github.com/github/copilot-cli/releases/"
+        f"download/v{copilot_version.group(1)}/copilot-win32-x64.zip" in dockerfile
+    )
+    assert re.search(r"(?m)^ARG COPILOT_CLI_SHA256=[0-9a-f]{64}$", dockerfile)
+    assert re.search(r"(?m)^ARG COPILOT_CLI_LICENSE_SHA256=[0-9a-f]{64}$", dockerfile)
+    assert "ARG POWERSHELL_VERSION=7.7.0" in dockerfile
+    assert (
+        "ARG POWERSHELL_SHA256="
+        "7c74e03b20a75b59715847439d046a6214b1863ee79b187872980f139bb4a05f" in dockerfile
+    )
     assert "throw 'p4.exe SHA256 verification failed'" in dockerfile
     assert "throw 'p4-mcp-server SHA256 verification failed'" in dockerfile
+    assert "throw 'Copilot CLI SHA256 verification failed'" in dockerfile
+    assert "throw 'Copilot CLI license SHA256 verification failed'" in dockerfile
+    assert "throw 'PowerShell SHA256 verification failed'" in dockerfile
     assert "C:\\Perforce\\p4.exe" in dockerfile
     assert "C:\\Perforce\\p4mcp\\p4-mcp-server.exe" in dockerfile
     assert "C:\\Perforce\\p4mcp\\logs" in dockerfile
+    assert "C:\\Copilot\\copilot.exe --no-auto-update help acp" in dockerfile
+    assert "C:\\PowerShell\\pwsh.exe" in dockerfile
     assert "'*S-1-5-93-2-1:(OI)(CI)RX'" in dockerfile
     assert "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
     assert (
-        'ENV PATH="C:\\Perforce;C:\\Perforce\\p4mcp;'
+        'ENV PATH="C:\\Copilot;C:\\PowerShell;C:\\Perforce;C:\\Perforce\\p4mcp;'
         "C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;"
         "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;"
         'C:\\Windows\\System32\\WindowsPowerShell\\v1.0"' in dockerfile
@@ -233,7 +254,10 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     assert "windows-server-2025, windows-containers" in workflow
     assert "Get-Command p4.exe -ErrorAction Stop" in workflow
     assert "Get-Command p4-mcp-server.exe -ErrorAction Stop" in workflow
+    assert "Get-Command copilot.exe -ErrorAction Stop" in workflow
+    assert "Get-Command pwsh.exe -ErrorAction Stop" in workflow
     assert "p4.exe -V" in workflow
     assert "p4-mcp-server.exe --help" in workflow
+    assert "copilot.exe --no-auto-update help acp" in workflow
     assert "Select-Object -First 1" not in workflow
     assert "latest-windows" not in workflow

@@ -626,7 +626,7 @@ def test_install_acp_providers_defaults_to_full_provider_set():
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions()
-    assert opts.install_acp_providers == "claude-code,codex,gemini-cli"
+    assert opts.install_acp_providers == "claude-code,codex,gemini-cli,copilot-cli"
 
 
 def test_install_acp_providers_rejects_unknown_provider():
@@ -649,7 +649,7 @@ def test_install_acp_providers_accepts_empty_list():
 
 @pytest.mark.parametrize(
     "install_acp_providers",
-    ["claude-code,codex,gemini-cli", "codex", ""],
+    ["claude-code,codex,gemini-cli,copilot-cli", "codex", ""],
 )
 def test_build_passes_install_acp_providers_build_arg(
     tmp_path: Path, install_acp_providers: str
@@ -707,7 +707,7 @@ def test_build_passes_install_acp_providers_build_arg(
 @pytest.mark.parametrize(
     "env_value,expected",
     [
-        (None, "claude-code,codex,gemini-cli"),
+        (None, "claude-code,codex,gemini-cli,copilot-cli"),
         ("", ""),
         ("codex", "codex"),
     ],

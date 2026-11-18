@@ -23,7 +23,7 @@ on:
             install_acp_providers:
                 description: Comma-separated ACP provider keys to bake into the image
                 type: string
-                default: claude-code,codex,gemini-cli
+                default: claude-code,codex,gemini-cli,copilot-cli
             install_capabilities:
                 description: Comma-separated capability keys to bake into the image
                 type: string
@@ -497,9 +497,13 @@ jobs:
                       $toolCheckCommand = @(
                           'Get-Command p4.exe -ErrorAction Stop | Out-Null'
                           'Get-Command p4-mcp-server.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command copilot.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command pwsh.exe -ErrorAction Stop | Out-Null'
                           'p4.exe -V'
                           'p4-mcp-server.exe --help | Out-Null'
                           "if (`$LASTEXITCODE -ne 0) { throw 'p4-mcp-server.exe --help failed.' }"
+                          '$copilotAcpHelp = copilot.exe --no-auto-update help acp'
+                          "if (`$LASTEXITCODE -ne 0 -or (`$copilotAcpHelp -join ""`n"") -notmatch 'talks to it over stdio') { throw 'copilot.exe ACP help failed.' }"
                       ) -join '; '
                       docker exec $containerName powershell `
                         -NoLogo `
@@ -507,7 +511,7 @@ jobs:
                         -NonInteractive `
                         -Command $toolCheckCommand
                       if ($LASTEXITCODE -ne 0) {
-                          throw 'Required Perforce executables are unavailable to ContainerUser.'
+                          throw 'Required Windows runtime executables are unavailable to ContainerUser.'
                       }
                   } finally {
                       docker logs $containerName
@@ -797,7 +801,7 @@ jobs:
             # whenever B is falsy, so an explicit "" dispatch input ("install
             # none") would silently fall through to the default if it sat in
             # B's position instead.
-            INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}
+            INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli,copilot-cli' || inputs.install_acp_providers }}
             # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
             # explicit "" dispatch input ("install none") must survive.
             INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}

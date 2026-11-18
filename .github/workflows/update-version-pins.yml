@@ -6,12 +6,14 @@ name: Update version pins
 # schedule trigger is the union of the per-pin crons and each job runs
 # only for its own cron (or when manually dispatched for that pin).
 #   - npm:          daily  (7-day observation, majors opt-in)
+#   - Copilot CLI:  daily  (7-day observation on GitHub and npm)
 #   - code-server:  weekly (7-day observation)
 #   - Debian snapshot: weekly (3-day observation, build+scan before PR)
 
 on:
     schedule:
         - cron: 37 6 * * *
+        - cron: 57 6 * * *
         - cron: 47 6 * * 1
         - cron: 17 6 * * 1
     workflow_dispatch:
@@ -23,6 +25,7 @@ on:
                 options:
                     - all
                     - npm
+                    - copilot-cli
                     - code-server
                     - debian
 
@@ -205,6 +208,98 @@ jobs:
                   )
                   gh pr create --repo "$REPO" --base main --head "$BRANCH" --draft \
                     --title "chore(agent-server): update code-server to $VERSION" --body "$BODY"
+
+    update-copilot-cli:
+        if: >-
+            github.event.schedule == '57 6 * * *' ||
+            inputs.pin == 'copilot-cli' || inputs.pin == 'all'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        concurrency:
+            group: update-agent-server-copilot-cli
+            cancel-in-progress: false
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            CATALOG: openhands-sdk/openhands/sdk/settings/acp_install_catalog.py
+            WINDOWS_DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile.windows
+            TYPESCRIPT_REGISTRY: clients/typescript/src/models/acp-providers.json
+        steps:
+            - uses: actions/checkout@v7.0.1
+              with:
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            - name: Select the newest observed stable release
+              run: |
+                  python .github/scripts/update_copilot_cli_pin.py \
+                    --catalog "$CATALOG" \
+                    --windows-dockerfile "$WINDOWS_DOCKERFILE" \
+                    --typescript-registry "$TYPESCRIPT_REGISTRY"
+            - name: Smoke test pinned ACP executable
+              run: |
+                  set -euo pipefail
+                  VERSION=$(sed -n 's/^COPILOT_CLI_VERSION = "\([^"]*\)"/\1/p' "$CATALOG")
+                  test -n "$VERSION"
+                  npm exec --yes --package="@github/copilot@$VERSION" -- \
+                    copilot --no-auto-update help acp |
+                    grep -F 'talks to it over stdio'
+            - name: Open update PR
+              env:
+                  REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  if git diff --quiet; then
+                      echo "Copilot CLI is already current."
+                      exit 0
+                  fi
+                  VERSION=$(sed -n 's/^COPILOT_CLI_VERSION = "\([^"]*\)"/\1/p' "$CATALOG")
+                  OPEN=$(gh pr list --repo "$REPO" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/agent-server-copilot-cli-"))] | length')
+                  if [ "$OPEN" -gt 0 ]; then
+                      echo "A Copilot CLI update PR is pending review; leaving it unchanged."
+                      exit 0
+                  fi
+                  BRANCH="chore/agent-server-copilot-cli-$VERSION"
+                  EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number')
+                  if [ -n "$EXISTING" ]; then
+                      echo "Version $VERSION already has PR #$EXISTING; leaving it unchanged."
+                      exit 0
+                  fi
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$BRANCH"
+                  git add "$CATALOG" "$WINDOWS_DOCKERFILE" "$TYPESCRIPT_REGISTRY"
+                  git commit -m "chore(agent-server): update Copilot CLI to $VERSION" \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+                  BODY=$(cat <<EOF
+                  HUMAN:
+
+                  <!-- Human reviewer: add testing/approval notes before marking ready. -->
+
+                  ---
+
+                  AGENT:
+
+                  ## Why
+                  Keep the Copilot CLI ACP provider current without allowing
+                  mutable downloads or self-updates inside running agent pods.
+
+                  ## Summary
+                  Update the shared SDK/npm pin and the checksum-verified native
+                  Windows binary to $VERSION after both the GitHub release and npm
+                  package completed the seven-day observation period.
+
+                  ## How to Test
+                  The updater verified the pinned Linux npm package exposes ACP.
+                  Review the normal Linux image matrix, then run the native Windows
+                  image workflow and verify its Copilot ACP smoke probe before rollout.
+
+                  ## Type
+                  - [x] Docs / chore
+
+                  _This PR was generated by an automated workflow maintained by OpenHands; the workflow was created by an AI agent (OpenHands) on behalf of Graham Neubig._
+                  EOF
+                  )
+                  gh pr create --repo "$REPO" --base main --head "$BRANCH" --draft \
+                    --title "chore(agent-server): update Copilot CLI to $VERSION" --body "$BODY"
 
     update-debian-snapshot:
         if: >-

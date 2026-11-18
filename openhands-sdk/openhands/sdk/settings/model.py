@@ -1464,7 +1464,14 @@ class ConversationSettings(BaseModel):
 
 
 ACPServerKind = Literal[
-    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "kimi-code",
+    "pi",
+    "opencode",
+    "copilot-cli",
+    "custom",
 ]
 """Known ACP backend servers the GUI can pick from.
 

@@ -1990,7 +1990,15 @@ def test_acp_resolve_command_for_known_servers(
     default stays the ``npx`` invocation.
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode"):
+    for server in (
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+        "copilot-cli",
+    ):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
@@ -2044,7 +2052,8 @@ def test_acp_custom_server_with_command_resolves() -> None:
 # resolve_acp_command() — prefer the pinned, pre-installed CLI binary
 #
 # The agent-server image pre-installs the ACP CLIs and exposes them as wrappers
-# on PATH (claude-agent-acp / codex-acp / gemini). resolve_acp_command rewrites
+# on PATH (claude-agent-acp / codex-acp / gemini / copilot).
+# resolve_acp_command rewrites
 # the ``npx -y <pkg>`` launch command — the registry default AND the explicit
 # acp_command canvas sends — to run the pinned binary directly when it is on
 # PATH (reproducible, no runtime npm download), preserving trailing args. When
@@ -2069,6 +2078,11 @@ def _which_returning(*available: str):
         # opencode's trailing arg is an ``acp`` subcommand, preserved the same
         # way as gemini's ``--acp`` flag.
         ("opencode", "opencode", ["opencode", "acp"]),
+        (
+            "copilot-cli",
+            "copilot",
+            ["copilot", "--acp", "--stdio", "--no-auto-update"],
+        ),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -2099,6 +2113,24 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
         ],
     )
     assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
+
+
+def test_copilot_cli_resolves_from_native_windows_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_which(name: str) -> str | None:
+        if name == "copilot":
+            return r"C:\Copilot\copilot.exe"
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    assert ACPAgentSettings(acp_server="copilot-cli").resolve_acp_command() == [
+        "copilot",
+        "--acp",
+        "--stdio",
+        "--no-auto-update",
+    ]
 
 
 def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
@@ -2230,6 +2262,10 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     # pi is multi-provider but reads a plain provider key out of the process
     # env; ANTHROPIC_API_KEY is the channel the registry provisions for it.
     assert ACPAgentSettings(acp_server="pi").api_key_env_var == "ANTHROPIC_API_KEY"
+    assert (
+        ACPAgentSettings(acp_server="copilot-cli").api_key_env_var
+        == "COPILOT_GITHUB_TOKEN"
+    )
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )
@@ -2834,6 +2870,7 @@ def test_acp_resolve_command_uses_registry_defaults(
         "kimi-code",
         "pi",
         "opencode",
+        "copilot-cli",
     ):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)

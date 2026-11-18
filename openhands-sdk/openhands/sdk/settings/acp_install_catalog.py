@@ -106,6 +106,7 @@ CLAUDE_AGENT_ACP_VERSION = "0.99.1"
 CODEX_ACP_VERSION = "2.2.2"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"
+COPILOT_CLI_VERSION = "1.0.109"
 
 # Pi is the one provider with two independent pins: pi-acp only adapts ACP and
 # spawns a separately installed `pi` engine off PATH.
@@ -176,6 +177,15 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         # No `engines` field on opencode-ai or its platform packages: the CLI
         # is a compiled Bun binary and only its postinstall runs on Node.
     ),
+    "copilot-cli": ACPInstallSpec(
+        key="copilot-cli",
+        packages=(ACPPackagePin("@github/copilot", COPILOT_CLI_VERSION),),
+        binary_name="copilot",
+        # ACP is a top-level flag, not a subcommand. Disable the executable's
+        # updater so the image always runs the reviewed package version.
+        trailing_args=("--acp", "--stdio", "--no-auto-update"),
+        min_node_version="22.0.0",
+    ),
 }
 """Every ACP provider installable via npm. Registry membership only makes a
 provider *selectable* (``INSTALL_ACP_PROVIDERS``) — see
@@ -187,6 +197,7 @@ DEFAULT_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = (
     "claude-code",
     "codex",
     "gemini-cli",
+    "copilot-cli",
 )
 """Provider keys baked into the default agent-server image
 (``INSTALL_ACP_PROVIDERS`` default). Kept separate from

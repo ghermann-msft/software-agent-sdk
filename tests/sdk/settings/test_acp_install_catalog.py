@@ -12,6 +12,7 @@ from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
     CLAUDE_AGENT_ACP_VERSION,
     CODEX_ACP_VERSION,
+    COPILOT_CLI_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
     GEMINI_CLI_VERSION,
     PI_ACP_VERSION,
@@ -141,6 +142,7 @@ class TestACPInstallCatalogMatchesACPProviders:
         assert CLAUDE_AGENT_ACP_VERSION == "0.99.1"
         assert CODEX_ACP_VERSION == "2.2.2"
         assert GEMINI_CLI_VERSION == "0.46.0"
+        assert COPILOT_CLI_VERSION.count(".") == 2
 
 
 class TestDefaultPreinstalledACPProviders:
@@ -149,6 +151,7 @@ class TestDefaultPreinstalledACPProviders:
             "claude-code",
             "codex",
             "gemini-cli",
+            "copilot-cli",
         )
 
     def test_every_default_provider_is_in_the_catalog(self):
@@ -165,8 +168,9 @@ class TestRenderDockerInstallPlan:
             f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
             f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION}",
             f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+            f"@github/copilot@{COPILOT_CLI_VERSION}",
         ]
-        assert wrapper_bins == ["claude-agent-acp", "codex-acp", "gemini"]
+        assert wrapper_bins == ["claude-agent-acp", "codex-acp", "gemini", "copilot"]
 
     def test_empty_selection_installs_nothing(self):
         assert render_docker_install_plan([]) == ([], [])
@@ -252,7 +256,12 @@ class TestACPInstallCatalogCLI:
         the Dockerfile's `PLAN=$(...) || exit 1; eval "$PLAN"`.
         """
         plan = subprocess.run(
-            [sys.executable, "-S", CATALOG_PY, "claude-code,codex,gemini-cli"],
+            [
+                sys.executable,
+                "-S",
+                CATALOG_PY,
+                "claude-code,codex,gemini-cli,copilot-cli",
+            ],
             capture_output=True,
             text=True,
         ).stdout
@@ -266,6 +275,7 @@ class TestACPInstallCatalogCLI:
         assert result.stdout.splitlines() == [
             f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION} "
             f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION} "
-            f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
-            "claude-agent-acp codex-acp gemini",
+            f"@google/gemini-cli@{GEMINI_CLI_VERSION} "
+            f"@github/copilot@{COPILOT_CLI_VERSION}",
+            "claude-agent-acp codex-acp gemini copilot",
         ]

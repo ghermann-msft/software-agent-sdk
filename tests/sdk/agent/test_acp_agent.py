@@ -46,6 +46,7 @@ from openhands.sdk.agent.acp_agent import (
     _OpenHandsACPBridge,
     _preconfigured_credentials,
     _reapply_session_model_on_resume,
+    _resolve_subprocess_executable,
     _select_auth_method,
     _serialize_tool_content,
     _split_effort_suffix,
@@ -362,6 +363,16 @@ class TestACPAgentInstantiation:
             "PATH": "/usr/bin",
             "USER_VALUE": "kept",
         }
+
+    def test_resolves_windows_npx_cmd_before_asyncio_spawn(self, monkeypatch):
+        monkeypatch.setattr(acp_agent_module, "_WINDOWS", True)
+        monkeypatch.setattr(
+            acp_agent_module.shutil,
+            "which",
+            lambda command: r"C:\Node\npx.cmd" if command == "npx" else None,
+        )
+
+        assert _resolve_subprocess_executable("npx") == r"C:\Node\npx.cmd"
 
     def test_requires_acp_command(self):
         with pytest.raises(Exception):

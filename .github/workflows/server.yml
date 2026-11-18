@@ -497,13 +497,23 @@ jobs:
                       $toolCheckCommand = @(
                           'Get-Command p4.exe -ErrorAction Stop | Out-Null'
                           'Get-Command p4-mcp-server.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command node.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command npm.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command npx.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command claude-agent-acp.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command codex-acp.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command gemini.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command kimi.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command pi-acp.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command opencode.cmd -ErrorAction Stop | Out-Null'
                           'Get-Command copilot.exe -ErrorAction Stop | Out-Null'
                           'Get-Command pwsh.exe -ErrorAction Stop | Out-Null'
                           'p4.exe -V'
                           'p4-mcp-server.exe --help | Out-Null'
                           "if (`$LASTEXITCODE -ne 0) { throw 'p4-mcp-server.exe --help failed.' }"
                           '$copilotAcpHelp = copilot.exe --no-auto-update help acp'
-                          "if (`$LASTEXITCODE -ne 0 -or (`$copilotAcpHelp -join ""`n"") -notmatch 'talks to it over stdio') { throw 'copilot.exe ACP help failed.' }"
+                          '$copilotAcpHelpText = [string]::Join([Environment]::NewLine, [string[]]$copilotAcpHelp)'
+                          "if (`$LASTEXITCODE -ne 0 -or `$copilotAcpHelpText -notmatch 'talks to it over stdio') { throw 'copilot.exe ACP help failed.' }"
                       ) -join '; '
                       docker exec $containerName powershell `
                         -NoLogo `
@@ -513,6 +523,22 @@ jobs:
                       if ($LASTEXITCODE -ne 0) {
                           throw 'Required Windows runtime executables are unavailable to ContainerUser.'
                       }
+
+                      docker cp `
+                        .github\scripts\test_windows_acp.ps1 `
+                        "${containerName}:C:\test_windows_acp.ps1"
+                      docker exec $containerName powershell `
+                        -NoLogo `
+                        -NoProfile `
+                        -NonInteractive `
+                        -File C:\test_windows_acp.ps1 `
+                        -Provider codex
+                      docker exec $containerName powershell `
+                        -NoLogo `
+                        -NoProfile `
+                        -NonInteractive `
+                        -File C:\test_windows_acp.ps1 `
+                        -Provider copilot
                   } finally {
                       docker logs $containerName
                       docker rm --force $containerName

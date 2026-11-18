@@ -2,15 +2,23 @@
 
 ARG PYTHON_BASE=python:3.13.17-windowsservercore-ltsc2025@sha256:806c67285624534627be8202d476b4c793c4d28e9c2342d881db420ce626033a
 ARG RUNTIME_BASE=mcr.microsoft.com/windows/servercore:ltsc2025@sha256:e3945d74c66f90f05c156bf32ad22f6642f27166a090cbd45a2035aab054c83e
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli,kimi-code,pi,opencode,copilot-cli
 
 FROM ${PYTHON_BASE} AS builder
 
 SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
+ARG INSTALL_ACP_PROVIDERS
+
 WORKDIR C:\src
 COPY . C:\src
 
-RUN python -m pip install --no-cache-dir uv==0.13.7; `
+RUN python openhands-sdk\openhands\sdk\settings\acp_install_catalog.py `
+        --format json `
+        $env:INSTALL_ACP_PROVIDERS | `
+        Out-File -Encoding ascii C:\src\acp-install-plan.json; `
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to render Windows ACP install plan' }; `
+    python -m pip install --no-cache-dir uv==0.13.7; `
     uv sync --frozen --group dev; `
     uv run pyinstaller openhands-agent-server\openhands\agent_server\agent-server.spec; `
     if (-not (Test-Path C:\src\dist\openhands-agent-server.exe)) { `
@@ -28,6 +36,11 @@ ARG P4_SHA256=b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b
 ARG P4_MCP_VERSION=2026.4.3126709
 ARG P4_MCP_URL=https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip
 ARG P4_MCP_SHA256=7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879
+ARG NODE_VERSION=24.22.2
+ARG NODE_URL=https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip
+ARG NODE_SHA256=ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2
+ARG NPM_VERSION=12.2.2
+ARG ACP_NPM_ALLOW_SCRIPTS=@moonshot-ai/kimi-code,opencode-ai,@github/keytar,node-pty,@google/genai,protobufjs
 ARG COPILOT_CLI_VERSION=1.0.109
 ARG COPILOT_CLI_URL=https://github.com/github/copilot-cli/releases/download/v1.0.109/copilot-win32-x64.zip
 ARG COPILOT_CLI_SHA256=794c16bcc5535cdf478598d6cf4af3228daec3b7801bfa3540c56b8d3524beee
@@ -48,6 +61,8 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
     New-Item -ItemType Directory -Force `
         C:\AgentServer, `
         C:\AgentServer\licenses, `
+        C:\ACP, `
+        C:\Node, `
         C:\OpenHands, `
         C:\OpenHands\bash_events, `
         C:\OpenHands\conversations, `
@@ -60,6 +75,48 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
         C:\workspace\worktrees | Out-Null; `
     icacls C:\OpenHands /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null; `
     icacls C:\workspace /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null
+
+COPY --from=builder C:\src\acp-install-plan.json C:\acp-install-plan.json
+
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:NODE_URL -OutFile C:\node.zip; `
+    if ((Get-FileHash C:\node.zip -Algorithm SHA256).Hash -ne $env:NODE_SHA256) { `
+        throw 'Node.js SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\node.zip -DestinationPath C:\node-extract; `
+    Remove-Item C:\node.zip; `
+    $nodeSource = Join-Path C:\node-extract ('node-v' + $env:NODE_VERSION + '-win-x64'); `
+    if (-not (Test-Path (Join-Path $nodeSource 'node.exe'))) { `
+        throw 'node.exe was not present in the Node.js release archive' `
+    }; `
+    Copy-Item (Join-Path $nodeSource '*') C:\Node -Recurse -Force; `
+    Remove-Item C:\node-extract -Recurse -Force; `
+    $nodeVersion = & C:\Node\node.exe --version; `
+    if ($LASTEXITCODE -ne 0 -or $nodeVersion.Trim() -ne ('v' + $env:NODE_VERSION)) { `
+        throw ('Unexpected Node.js version: ' + $nodeVersion) `
+    }; `
+    & C:\Node\npm.cmd install --global ('npm@' + $env:NPM_VERSION); `
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned npm installation failed' }; `
+    $npmVersion = & C:\Node\npm.cmd --version; `
+    if ($LASTEXITCODE -ne 0 -or $npmVersion.Trim() -ne $env:NPM_VERSION) { `
+        throw ('Unexpected npm version: ' + $npmVersion) `
+    }; `
+    $plan = Get-Content C:\acp-install-plan.json -Raw | ConvertFrom-Json; `
+    $packages = @($plan.packages); `
+    if ($packages.Count -eq 0) { throw 'Windows ACP install plan is empty' }; `
+    & C:\Node\npm.cmd install `
+        --global `
+        --prefix C:\ACP `
+        ('--allow-scripts=' + $env:ACP_NPM_ALLOW_SCRIPTS) `
+        $packages; `
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned Windows ACP provider installation failed' }; `
+    foreach ($binary in @($plan.wrapper_bins)) { `
+        if (-not (Test-Path (Join-Path C:\ACP ($binary + '.cmd')))) { `
+            throw ('ACP provider shim was not installed: ' + $binary + '.cmd') `
+        } `
+    }; `
+    Remove-Item C:\acp-install-plan.json; `
+    icacls C:\ACP /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null; `
+    icacls C:\Node /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null
 
 RUN Invoke-WebRequest -UseBasicParsing -Uri $env:P4_URL -OutFile C:\Perforce\p4.exe; `
     if ((Get-FileHash C:\Perforce\p4.exe -Algorithm SHA256).Hash -ne $env:P4_SHA256) { `
@@ -120,8 +177,9 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:COPILOT_CLI_URL -OutFile C:\cop
         throw 'Copilot CLI license SHA256 verification failed' `
     }; `
     $version = & C:\Copilot\copilot.exe --no-auto-update --version; `
-    if ($version -notmatch [regex]::Escape($env:COPILOT_CLI_VERSION)) { `
-        throw ('Unexpected Copilot CLI version: ' + ($version -join ' ')) `
+    $versionText = ($version -join ' ').Trim(); `
+    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch [regex]::Escape($env:COPILOT_CLI_VERSION)) { `
+        throw ('Unexpected Copilot CLI version: ' + $versionText) `
     }; `
     $acpHelp = & C:\Copilot\copilot.exe --no-auto-update help acp; `
     if ($LASTEXITCODE -ne 0 -or ($acpHelp -join ' ') -notmatch 'talks to it over stdio') { `
@@ -132,7 +190,7 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:COPILOT_CLI_URL -OutFile C:\cop
 COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
 COPY openhands-agent-server\openhands\agent_server\docker\PERFORCE_NOTICES.md C:\AgentServer\licenses\PERFORCE_NOTICES.md
 
-ENV PATH="C:\Copilot;C:\PowerShell;C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0" `
+ENV PATH="C:\Copilot;C:\ACP;C:\Node;C:\PowerShell;C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0" `
     LOG_JSON=true `
     OH_ACP_SKILL_SOURCING=openhands_managed `
     OH_BASH_EVENTS_DIR=C:\OpenHands\bash_events `

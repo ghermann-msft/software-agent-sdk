@@ -149,6 +149,7 @@ from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
+_WINDOWS = os.name == "nt"
 
 maybe_init_laminar()
 
@@ -246,6 +247,13 @@ def _strip_inherited_npm_env(env: dict[str, str]) -> None:
             _INHERITED_NPM_ENV_PREFIXES
         ):
             env.pop(key, None)
+
+
+def _resolve_subprocess_executable(command: str) -> str:
+    """Resolve Windows executable shims before passing them to asyncio."""
+    if not _WINDOWS:
+        return command
+    return shutil.which(command) or command
 
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
@@ -2757,7 +2765,7 @@ class ACPAgent(AgentBase):
         )
         package_args = [arg for package in packages for arg in ("--package", package)]
         process = await asyncio.create_subprocess_exec(
-            "npx",
+            _resolve_subprocess_executable("npx"),
             "--yes",
             "--prefer-offline",
             *package_args,
@@ -3258,7 +3266,7 @@ class ACPAgent(AgentBase):
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
             process = await asyncio.create_subprocess_exec(
-                command,
+                _resolve_subprocess_executable(command),
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,

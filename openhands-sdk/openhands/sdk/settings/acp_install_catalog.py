@@ -20,6 +20,7 @@ bump only needs to happen here.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -205,6 +206,15 @@ DEFAULT_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = (
 by itself, grow every published image — joining this default is a separate,
 deliberate decision per provider (see OpenHands/software-agent-sdk#4820)."""
 
+WINDOWS_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = tuple(ACP_INSTALL_CATALOG)
+"""Every built-in ACP provider ships in the native Windows Agent Server image.
+
+Unlike the configurable Linux base image, the native Windows runtime is a
+single curated image. Keeping this tuple derived from the catalog makes a new
+built-in provider fail the Windows image contract until its exact package pin
+is included in the immutable image payload.
+"""
+
 
 def render_docker_install_plan(
     keys: Iterable[str],
@@ -249,6 +259,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "providers", help="Comma-separated ACP provider keys, or '' for none."
     )
+    parser.add_argument(
+        "--format",
+        choices=("shell", "json"),
+        default="shell",
+        help="Output format for the generated install plan.",
+    )
     args = parser.parse_args(argv)
     keys = [k for k in (p.strip() for p in args.providers.split(",")) if k]
     try:
@@ -256,8 +272,11 @@ def _main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(f'PACKAGES="{" ".join(packages)}"')
-    print(f'WRAPPER_BINS="{" ".join(wrapper_bins)}"')
+    if args.format == "json":
+        print(json.dumps({"packages": packages, "wrapper_bins": wrapper_bins}))
+    else:
+        print(f'PACKAGES="{" ".join(packages)}"')
+        print(f'WRAPPER_BINS="{" ".join(wrapper_bins)}"')
     return 0
 
 

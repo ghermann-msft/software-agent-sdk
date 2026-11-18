@@ -17,6 +17,7 @@ from openhands.sdk.settings.acp_install_catalog import (
     GEMINI_CLI_VERSION,
     PI_ACP_VERSION,
     PI_CODING_AGENT_VERSION,
+    WINDOWS_PREINSTALLED_ACP_PROVIDERS,
     ACPInstallSpec,
     ACPPackagePin,
     _main,
@@ -159,6 +160,10 @@ class TestDefaultPreinstalledACPProviders:
             assert key in ACP_INSTALL_CATALOG
 
 
+def test_windows_image_preinstalls_every_catalog_provider():
+    assert WINDOWS_PREINSTALLED_ACP_PROVIDERS == tuple(ACP_INSTALL_CATALOG)
+
+
 class TestRenderDockerInstallPlan:
     def test_default_set(self):
         packages, wrapper_bins = render_docker_install_plan(
@@ -223,6 +228,17 @@ class TestACPInstallCatalogCLI:
         assert code == 0
         out = capsys.readouterr().out
         assert out.splitlines() == ['PACKAGES=""', 'WRAPPER_BINS=""']
+
+    def test_prints_json_plan_for_windows_image(self, capsys):
+        code = _main(["--format", "json", "codex,pi"])
+        assert code == 0
+        assert capsys.readouterr().out == (
+            '{"packages": ["@agentclientprotocol/codex-acp@'
+            f'{CODEX_ACP_VERSION}", "pi-acp@{PI_ACP_VERSION}", '
+            '"@earendil-works/pi-coding-agent@'
+            f'{PI_CODING_AGENT_VERSION}"], '
+            '"wrapper_bins": ["codex-acp", "pi-acp"]}\n'
+        )
 
     def test_unknown_provider_fails_clearly(self, capsys):
         code = _main(["bogus"])

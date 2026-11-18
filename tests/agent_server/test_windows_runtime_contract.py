@@ -8,6 +8,10 @@ import openhands.agent_server.config as config_module
 import openhands.agent_server.runtime_contract as runtime_contract
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config, default_conversation_worktree_root
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    WINDOWS_PREINSTALLED_ACP_PROVIDERS,
+)
 
 
 def test_curated_resource_profiles_are_os_independent() -> None:
@@ -154,6 +158,25 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     )
     assert re.search(r"(?m)^ARG COPILOT_CLI_SHA256=[0-9a-f]{64}$", dockerfile)
     assert re.search(r"(?m)^ARG COPILOT_CLI_LICENSE_SHA256=[0-9a-f]{64}$", dockerfile)
+    assert "ARG NODE_VERSION=24.22.2" in dockerfile
+    assert (
+        "ARG NODE_SHA256="
+        "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2" in dockerfile
+    )
+    assert "ARG NPM_VERSION=12.2.2" in dockerfile
+    assert (
+        "ARG ACP_NPM_ALLOW_SCRIPTS="
+        "@moonshot-ai/kimi-code,opencode-ai,@github/keytar,node-pty,"
+        "@google/genai,protobufjs" in dockerfile
+    )
+    assert (
+        "ARG INSTALL_ACP_PROVIDERS=" + ",".join(WINDOWS_PREINSTALLED_ACP_PROVIDERS)
+        in dockerfile
+    )
+    assert WINDOWS_PREINSTALLED_ACP_PROVIDERS == tuple(ACP_INSTALL_CATALOG)
+    assert "--format json" in dockerfile
+    assert "('--allow-scripts=' + $env:ACP_NPM_ALLOW_SCRIPTS)" in dockerfile
+    assert "$binary + '.cmd'" in dockerfile
     assert "ARG POWERSHELL_VERSION=7.7.0" in dockerfile
     assert (
         "ARG POWERSHELL_SHA256="
@@ -166,6 +189,8 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "throw 'PowerShell SHA256 verification failed'" in dockerfile
     assert "C:\\PowerShell\\pwsh.exe -NoLogo -NoProfile -Version" in dockerfile
     assert "C:\\PowerShell\\pwsh.exe -NoLogo -NoProfile -Command" not in dockerfile
+    assert "$versionText = ($version -join ' ').Trim()" in dockerfile
+    assert "$version -notmatch" not in dockerfile
     assert '-join "`n"' not in dockerfile
     assert "C:\\Perforce\\p4.exe" in dockerfile
     assert "C:\\Perforce\\p4mcp\\p4-mcp-server.exe" in dockerfile
@@ -175,7 +200,8 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "'*S-1-5-93-2-1:(OI)(CI)RX'" in dockerfile
     assert "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
     assert (
-        'ENV PATH="C:\\Copilot;C:\\PowerShell;C:\\Perforce;C:\\Perforce\\p4mcp;'
+        'ENV PATH="C:\\Copilot;C:\\ACP;C:\\Node;C:\\PowerShell;'
+        "C:\\Perforce;C:\\Perforce\\p4mcp;"
         "C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;"
         "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;"
         'C:\\Windows\\System32\\WindowsPowerShell\\v1.0"' in dockerfile
@@ -193,6 +219,27 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert (
         'ENTRYPOINT ["C:\\\\AgentServer\\\\openhands-agent-server.exe"]' in dockerfile
     )
+
+
+def test_windows_workflow_smokes_every_acp_shim_and_two_acp_transports() -> None:
+    workflow = (
+        Path(__file__).parents[2] / ".github" / "workflows" / "server.yml"
+    ).read_text(encoding="utf-8")
+    smoke_script = (
+        Path(__file__).parents[2] / ".github" / "scripts" / "test_windows_acp.ps1"
+    ).read_text(encoding="utf-8")
+
+    for spec in ACP_INSTALL_CATALOG.values():
+        executable = (
+            "copilot.exe" if spec.key == "copilot-cli" else f"{spec.binary_name}.cmd"
+        )
+        assert f"Get-Command {executable} -ErrorAction Stop" in workflow
+
+    assert "-Provider codex" in workflow
+    assert "-Provider copilot" in workflow
+    assert "method = 'initialize'" in smoke_script
+    assert r"$command = 'C:\ACP\codex-acp.cmd'" in smoke_script
+    assert r"$command = 'C:\Copilot\copilot.exe'" in smoke_script
 
 
 def test_openapi_exports_runtime_image_contract() -> None:

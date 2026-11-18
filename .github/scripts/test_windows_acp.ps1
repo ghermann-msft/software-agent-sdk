@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('codex', 'copilot')]
-    [string]$Provider
+    [string]$Provider,
+
+    [int]$TimeoutSeconds = 90
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,7 +43,7 @@ $request = @{
 try {
     $process.StandardInput.WriteLine($request)
     $process.StandardInput.Flush()
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 
     while ([DateTime]::UtcNow -lt $deadline) {
         $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds

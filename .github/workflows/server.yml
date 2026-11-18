@@ -533,12 +533,18 @@ jobs:
                         -NonInteractive `
                         -File C:\test_windows_acp.ps1 `
                         -Provider codex
+                      if ($LASTEXITCODE -ne 0) {
+                          throw 'Codex ACP initialize smoke failed.'
+                      }
                       docker exec $containerName powershell `
                         -NoLogo `
                         -NoProfile `
                         -NonInteractive `
                         -File C:\test_windows_acp.ps1 `
                         -Provider copilot
+                      if ($LASTEXITCODE -ne 0) {
+                          throw 'Copilot ACP initialize smoke failed.'
+                      }
                   } finally {
                       docker logs $containerName
                       docker rm --force $containerName

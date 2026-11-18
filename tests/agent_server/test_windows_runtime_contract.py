@@ -238,7 +238,10 @@ def test_windows_workflow_smokes_every_acp_shim_and_two_acp_transports() -> None
 
     assert "-Provider codex" in workflow
     assert "-Provider copilot" in workflow
+    assert "throw 'Codex ACP initialize smoke failed.'" in workflow
+    assert "throw 'Copilot ACP initialize smoke failed.'" in workflow
     assert "method = 'initialize'" in smoke_script
+    assert "[int]$TimeoutSeconds = 90" in smoke_script
     assert r"$command = 'C:\ACP\codex-acp.cmd'" in smoke_script
     assert r"$command = 'C:\Copilot\copilot.exe'" in smoke_script
 

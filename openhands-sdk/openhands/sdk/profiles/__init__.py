@@ -42,6 +42,7 @@ from openhands.sdk.profiles.seed import (
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.tool.defaults import launch_tool_specs
 
+
 if TYPE_CHECKING:
     from collections.abc import Collection
 

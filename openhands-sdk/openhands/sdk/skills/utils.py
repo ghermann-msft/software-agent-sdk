@@ -32,6 +32,8 @@ SecretLookup = Callable[[str], str | None]
 
 logger = get_logger(__name__)
 
+SKILLS_CACHE_DIR_ENV = "OPENHANDS_SKILLS_CACHE_DIR"
+
 # Regex patterns for variable expansion
 # Braced only: ${VAR} or ${VAR:-default}
 _BRACED_VAR_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
@@ -592,11 +594,18 @@ def get_skills_cache_dir() -> Path:
     """Get the local cache directory for public skills repository.
 
     Returns:
-        Path to the ``cache/skills`` subdirectory of the user persistence
-        directory (``~/.openhands/cache/skills`` absent OH_PERSISTENCE_DIR).
+        ``OPENHANDS_SKILLS_CACHE_DIR`` when set, otherwise the ``cache/skills``
+        subdirectory of the user persistence directory.
     """
-    cache_dir = get_user_persistence_dir() / "cache" / "skills"
+    override = os.environ.get(SKILLS_CACHE_DIR_ENV)
+    if override:
+        cache_dir = Path(override).expanduser()
+        if not cache_dir.is_absolute():
+            raise ValueError(f"{SKILLS_CACHE_DIR_ENV} must be an absolute path")
+    else:
+        cache_dir = get_user_persistence_dir() / "cache" / "skills"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.chmod(0o700)
     return cache_dir
 
 

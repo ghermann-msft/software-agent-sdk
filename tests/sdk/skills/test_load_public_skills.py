@@ -1,6 +1,7 @@
 """Tests for load_public_skills functionality with git-based caching."""
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -19,7 +20,10 @@ from openhands.sdk.skills.skill import (
     _invalidate_public_skills_cache,
     load_marketplace_skill_names,
 )
-from openhands.sdk.skills.utils import update_skills_repository
+from openhands.sdk.skills.utils import (
+    get_skills_cache_dir,
+    update_skills_repository,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -175,6 +179,33 @@ def _create_skills_git_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_skills_cache_dir_uses_absolute_override(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "ssd" / "skills-cache"
+    monkeypatch.setenv("OPENHANDS_SKILLS_CACHE_DIR", str(cache_dir))
+
+    assert get_skills_cache_dir() == cache_dir
+    assert cache_dir.is_dir()
+    if os.name != "nt":
+        assert cache_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_skills_cache_dir_preserves_persistence_fallback(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENHANDS_SKILLS_CACHE_DIR", raising=False)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+
+    assert get_skills_cache_dir() == tmp_path / "persistence" / "cache" / "skills"
+
+
+def test_skills_cache_dir_rejects_relative_override(monkeypatch):
+    monkeypatch.setenv("OPENHANDS_SKILLS_CACHE_DIR", "relative/skills-cache")
+
+    with pytest.raises(
+        ValueError,
+        match="OPENHANDS_SKILLS_CACHE_DIR must be an absolute path",
+    ):
+        get_skills_cache_dir()
+
+
 def test_load_public_skills_success(mock_repo_dir, tmp_path):
     """Test successfully loading skills from cached repository."""
 
@@ -204,6 +235,26 @@ def test_load_public_skills_success(mock_repo_dir, tmp_path):
         # Check testing skill (no trigger - always active)
         testing_skill = next(s for s in skills if s.name == "testing")
         assert testing_skill.trigger is None
+
+
+def test_load_public_skills_uses_configured_cache_dir(
+    mock_repo_dir, tmp_path, monkeypatch
+):
+    cache_dir = tmp_path / "ssd" / "skills-cache"
+    monkeypatch.setenv("OPENHANDS_SKILLS_CACHE_DIR", str(cache_dir))
+
+    with patch(
+        "openhands.sdk.skills.skill.update_skills_repository",
+        return_value=mock_repo_dir,
+    ) as update:
+        skills = load_public_skills()
+
+    assert {skill.name for skill in skills} == {"git", "docker", "testing"}
+    update.assert_called_once_with(
+        "https://github.com/OpenHands/extensions",
+        "main",
+        cache_dir,
+    )
 
 
 def test_concurrent_loads_of_a_local_copy_share_one_load(mock_repo_dir, monkeypatch):

@@ -7,8 +7,12 @@ import os
 import stat
 from pathlib import Path
 
+import anyio
 from fastmcp.mcp_config import RemoteMCPServer
 from fastmcp.server import create_proxy
+from fastmcp.server.context import reset_transport, set_transport
+from mcp.server.runner import serve_loop
+from mcp.server.stdio import stdio_server
 from pydantic import ValidationError
 
 from openhands.agent_server.config import Config
@@ -77,4 +81,22 @@ def create_oauth_stdio_bridge(
 
 def run_oauth_stdio_bridge(config: Config, seed_path: str | Path) -> None:
     bridge = create_oauth_stdio_bridge(config, seed_path)
-    bridge.run(transport="stdio", show_banner=False, stateless=False)
+
+    async def run_handshake_stdio() -> None:
+        token = set_transport("stdio")
+        try:
+            async with bridge._lifespan_manager():
+                async with stdio_server() as (read_stream, write_stream):
+                    server = bridge._mcp_server
+                    async with server.lifespan(server) as lifespan_state:
+                        await serve_loop(
+                            server,
+                            read_stream,
+                            write_stream,
+                            lifespan_state=lifespan_state,
+                            init_options=server.create_initialization_options(),
+                        )
+        finally:
+            reset_transport(token)
+
+    anyio.run(run_handshake_stdio)

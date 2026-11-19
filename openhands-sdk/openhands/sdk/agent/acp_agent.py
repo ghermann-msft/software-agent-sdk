@@ -2887,14 +2887,35 @@ class ACPAgent(AgentBase):
             seed_path = oauth_seed_dir / f"{identity}.json"
             oauth_seed_paths[name] = seed_path
             seed_server = server.with_decrypted_secrets(cipher=state._cipher)
+            seed_server_payload = seed_server.model_dump(
+                mode="json",
+                context=client_context("plaintext"),
+                exclude_none=True,
+            )
+            seed_auth = server.oauth_auth
+            if seed_auth is not None:
+                auth_payload = seed_server_payload["auth"]
+                assert isinstance(auth_payload, dict)
+                if seed_auth.state is not None:
+                    auth_payload["state"] = seed_auth.state.to_plain_dict(
+                        cipher=state._cipher
+                    )
+                decrypted_auth = seed_server.oauth_auth
+                assert decrypted_auth is not None
+                authentication = decrypted_auth.authentication
+                if (
+                    authentication is not None
+                    and authentication.client_secret is not None
+                ):
+                    authentication_payload = auth_payload["authentication"]
+                    assert isinstance(authentication_payload, dict)
+                    authentication_payload["client_secret"] = (
+                        authentication.client_secret.get_secret_value()
+                    )
             oauth_seed_payloads[seed_path] = json.dumps(
                 {
                     "name": name,
-                    "server": seed_server.model_dump(
-                        mode="json",
-                        context=client_context("plaintext"),
-                        exclude_none=True,
-                    ),
+                    "server": seed_server_payload,
                 },
                 separators=(",", ":"),
             )

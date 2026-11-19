@@ -9547,12 +9547,15 @@ class TestACPMcpForwarding:
         assert config_path is not None
         config = json.loads(config_path.read_text())
         seed_path = Path(config["mcpServers"]["atlassian-rovo"]["args"][-1])
-        seed = seed_path.read_text()
-        assert "oauth-access-token" in seed
-        assert "oauth-refresh-token" in seed
-        assert "oauth-client-secret" in seed
-        assert "registered-client-secret" in seed
-        assert "gAAAAA" not in seed
+        seed = json.loads(seed_path.read_text())
+        auth = seed["server"]["auth"]
+        assert auth["authentication"]["client_secret"] == "oauth-client-secret"
+        assert auth["state"]["tokens"]["access_token"] == "oauth-access-token"
+        assert auth["state"]["tokens"]["refresh_token"] == "oauth-refresh-token"
+        assert (
+            auth["state"]["client_info"]["client_secret"] == "registered-client-secret"
+        )
+        assert "gAAAAA" not in seed_path.read_text()
         assert "Failed to decrypt secret value" not in caplog.text
         agent.close()
 

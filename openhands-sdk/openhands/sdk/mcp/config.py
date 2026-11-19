@@ -41,6 +41,11 @@ AZURE_AI_SCOPE = "https://ai.azure.com/.default"
 
 
 _MCP_SECRET = SecretField(redact_as_text=True, serialized_as=str | None)
+_MCP_OAUTH_SECRET = SecretField(
+    undecryptable="keep",
+    redact_as_text=True,
+    serialized_as=str | None,
+)
 _MCP_SECRET_MAP = SecretField(
     redact_as_text=True, serialized_as=dict[str, str | None] | None
 )
@@ -166,14 +171,14 @@ class MCPAzureWorkloadIdentityAuthCredential(_MCPBaseModel):
 class MCPOAuthTokenState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
-    access_token: Annotated[SecretStr | None, _MCP_SECRET] = None
-    refresh_token: Annotated[SecretStr | None, _MCP_SECRET] = None
+    access_token: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
+    refresh_token: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
 
 
 class MCPOAuthClientInfoState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
-    client_secret: Annotated[SecretStr | None, _MCP_SECRET] = None
+    client_secret: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
 
 
 class MCPOAuthTokenExpiryState(_MCPBaseModel):
@@ -197,7 +202,7 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     client_name: str | None = None
     client_metadata_url: str | None = None
     client_id: str | None = None
-    client_secret: Annotated[SecretStr | None, _MCP_SECRET] = None
+    client_secret: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
     additional_client_metadata: dict[str, Any] | None = None
 
 
@@ -343,7 +348,7 @@ class MCPOAuthState(_MCPBaseModel):
             return self._to_storage_dict(context=client_context("plaintext"))
         decrypted = type(self).model_validate(
             self._to_storage_dict(context=client_context("plaintext")),
-            context=cipher_context(cipher),
+            context=cipher_context(cipher, strict=True),
         )
         return decrypted._to_storage_dict(context=client_context("plaintext"))
 
@@ -492,7 +497,10 @@ class MCPServer(_MCPBaseModel):
             exclude_none=True,
             exclude_defaults=True,
         )
-        return type(self).model_validate(data, context=cipher_context(cipher))
+        return type(self).model_validate(
+            data,
+            context=cipher_context(cipher, strict=True),
+        )
 
 
 _MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(

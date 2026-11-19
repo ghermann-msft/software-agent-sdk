@@ -90,11 +90,13 @@ from openhands.sdk.settings.acp_install_catalog import (
     ACPPackagePin,
 )
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+from openhands.sdk.settings.model import ACPAgentSettings, validate_agent_settings
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
+    cipher_context,
     client_context,
 )
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -9506,7 +9508,8 @@ class TestACPMcpForwarding:
     def test_copilot_oauth_seed_decrypts_parent_cipher_before_handoff(
         self, tmp_path, caplog
     ):
-        cipher = Cipher(secret_key="parent-agent-server-secret-key")
+        source_cipher = Cipher(secret_key="organization-settings-secret-key")
+        intermediate_cipher = Cipher(secret_key="sandbox-settings-secret-key")
         plaintext_server = MCPServer.model_validate(
             {
                 "url": "https://mcp.example.com/mcp",
@@ -9530,17 +9533,23 @@ class TestACPMcpForwarding:
                 },
             }
         )
-        encrypted_server = MCPServer.model_validate(
-            plaintext_server.model_dump(
-                mode="json",
-                context=client_context("encrypted", cipher),
-            )
+        encrypted_settings = {
+            "agent_kind": "acp",
+            "acp_server": "copilot-cli",
+            "mcp_config": {
+                "atlassian-rovo": plaintext_server.model_dump(
+                    mode="json",
+                    context=client_context("encrypted", source_cipher),
+                )
+            },
+        }
+        parsed_settings = validate_agent_settings(
+            encrypted_settings,
+            context=cipher_context(intermediate_cipher),
         )
-        agent = _make_agent(
-            acp_server="copilot-cli",
-            mcp_config={"atlassian-rovo": encrypted_server},
-        )
-        state = _make_state(tmp_path, cipher=cipher)
+        assert isinstance(parsed_settings, ACPAgentSettings)
+        agent = parsed_settings.create_agent()
+        state = _make_state(tmp_path, cipher=source_cipher)
 
         config_path = agent._materialize_copilot_stdio_mcp_config(state)
 

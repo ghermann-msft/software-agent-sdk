@@ -30,6 +30,33 @@ def test_agent_server_runs_packaged_azure_mcp_bridge() -> None:
     )
 
 
+def test_agent_server_runs_packaged_oauth_mcp_bridge() -> None:
+    argv = [
+        "openhands-agent-server",
+        "--mcp-oauth-bridge",
+        "--mcp-oauth-bridge-name",
+        "atlassian-rovo",
+        "--mcp-oauth-bridge-url",
+        "https://mcp.atlassian.com/v1/mcp",
+    ]
+
+    with (
+        patch.object(sys, "argv", argv),
+        patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+        patch("openhands.agent_server.config.load_config") as load_config,
+        patch(
+            "openhands.agent_server.mcp_oauth_stdio_bridge.run_oauth_stdio_bridge"
+        ) as run_bridge,
+    ):
+        main()
+
+    run_bridge.assert_called_once_with(
+        load_config.return_value,
+        "atlassian-rovo",
+        "https://mcp.atlassian.com/v1/mcp",
+    )
+
+
 def test_agent_server_bridge_mode_suppresses_sdk_banner(capsys) -> None:
     argv = [
         "openhands-agent-server",

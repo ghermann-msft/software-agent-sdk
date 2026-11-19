@@ -92,6 +92,26 @@ class MCPOAuth(OAuth):
             outgoing = await anext(flow)
             while True:
                 response = yield self._with_supported_auth_method(outgoing)
+                if (
+                    response.status_code == 401
+                    and "Authorization" in outgoing.headers
+                    and self.context.can_refresh_token()
+                ):
+                    refresh_response = yield self._with_supported_auth_method(
+                        await self._refresh_token()
+                    )
+                    if await self._handle_refresh_response(refresh_response):
+                        headers = outgoing.headers.copy()
+                        headers.pop("Authorization", None)
+                        retry = httpx2.Request(
+                            outgoing.method,
+                            outgoing.url,
+                            headers=headers,
+                            content=outgoing.content,
+                            extensions=outgoing.extensions,
+                        )
+                        self._add_auth_header(retry)
+                        response = yield retry
                 try:
                     outgoing = await flow.asend(response)
                 except StopAsyncIteration:

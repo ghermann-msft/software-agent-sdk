@@ -8949,6 +8949,70 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer oauth-access-token")
         ]
 
+    def test_copilot_oauth_uses_local_refreshing_bridge(self):
+        secret = "oauth-access-token"
+        cfg = self._config(
+            {
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": secret}},
+                    },
+                }
+            }
+        )
+
+        out = _mcp_config_to_acp_servers(
+            cfg,
+            self._caps(http=True, sse=False),
+            bridge_oauth=True,
+        )
+
+        assert len(out) == 1
+        server = out[0]
+        assert server.name == "atlassian-rovo"
+        assert server.command == acp_agent_module.sys.executable
+        assert "--mcp-oauth-bridge" in server.args
+        assert "--mcp-oauth-bridge-url" in server.args
+        assert [(item.name, item.value) for item in server.env] == [
+            ("OPENHANDS_SUPPRESS_BANNER", "1")
+        ]
+        payload = server.model_dump_json()
+        assert secret not in payload
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
+
+    def test_oauth_bridge_uses_packaged_agent_server_executable(self):
+        cfg = self._config(
+            {
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        )
+
+        with patch.object(
+            acp_agent_module.sys,
+            "executable",
+            "/usr/local/bin/openhands-agent-server",
+        ):
+            out = _mcp_config_to_acp_servers(
+                cfg,
+                self._caps(http=True, sse=False),
+                bridge_oauth=True,
+            )
+
+        assert out[0].command == "/usr/local/bin/openhands-agent-server"
+        assert out[0].args == [
+            "--mcp-oauth-bridge",
+            "--mcp-oauth-bridge-name",
+            "atlassian-rovo",
+            "--mcp-oauth-bridge-url",
+            "https://mcp.atlassian.com/v1/mcp",
+        ]
+
     def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
         from openhands.sdk.mcp.config import MCPServer
 
@@ -9291,6 +9355,18 @@ class TestACPMcpForwarding:
                     },
                 },
                 "atlassian": {"url": "https://atlassian.example.com/mcp"},
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {
+                                "access_token": "atlassian-access-do-not-log",
+                                "refresh_token": "atlassian-refresh-do-not-log",
+                            }
+                        },
+                    },
+                },
             },
         )
         state = _make_state(tmp_path)
@@ -9315,10 +9391,18 @@ class TestACPMcpForwarding:
         assert config["mcpServers"]["foundry"]["env"] == {
             "OPENHANDS_SUPPRESS_BANNER": "1"
         }
+        oauth_bridge = config["mcpServers"]["atlassian-rovo"]
+        assert "--mcp-oauth-bridge" in oauth_bridge["args"]
+        assert oauth_bridge["env"] == {"OPENHANDS_SUPPRESS_BANNER": "1"}
+        serialized = json.dumps(config)
+        assert "atlassian-access-do-not-log" not in serialized
+        assert "atlassian-refresh-do-not-log" not in serialized
         if os.name != "nt":
             assert config_path.stat().st_mode & 0o777 == 0o600
         assert secret not in " ".join(str(arg) for arg in process_args)
         assert secret not in caplog.text
+        assert "atlassian-access-do-not-log" not in caplog.text
+        assert "atlassian-refresh-do-not-log" not in caplog.text
         servers = conn.new_session.call_args.kwargs["mcp_servers"]
         assert [server.name for server in servers] == ["atlassian"]
 
@@ -9329,7 +9413,19 @@ class TestACPMcpForwarding:
                 "perforce": {
                     "command": "p4-mcp-server",
                     "env": {"P4PASSWD": "current-secret"},
-                }
+                },
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {
+                                "access_token": "current-access",
+                                "refresh_token": "current-refresh",
+                            }
+                        },
+                    },
+                },
             },
         )
         state = _make_state(tmp_path)
@@ -9343,6 +9439,9 @@ class TestACPMcpForwarding:
 
         config = json.loads(config_path.read_text())
         assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == ("current-secret")
+        assert "--mcp-oauth-bridge" in (config["mcpServers"]["atlassian-rovo"]["args"])
+        assert "current-access" not in config_path.read_text()
+        assert "current-refresh" not in config_path.read_text()
         conn.load_session.assert_awaited_once()
         assert conn.load_session.call_args.kwargs["mcp_servers"] == []
 
@@ -9365,6 +9464,29 @@ class TestACPMcpForwarding:
         assert "--additional-mcp-config" not in process_args
         servers = conn.new_session.call_args.kwargs["mcp_servers"]
         assert [server.name for server in servers] == ["perforce"]
+
+    def test_non_copilot_provider_keeps_oauth_remote(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access"}},
+                    },
+                }
+            },
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["atlassian-rovo"]
+        assert [header.value for header in servers[0].headers] == [
+            "Bearer oauth-access"
+        ]
 
 
 # ---------------------------------------------------------------------------

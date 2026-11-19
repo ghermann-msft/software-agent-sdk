@@ -13,14 +13,19 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import uvicorn
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
+from mcp import types as mcp_types
 from mcp.server.auth.provider import RefreshToken
 from mcp.server.auth.settings import ClientRegistrationOptions
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.mcp_oauth_stdio_bridge import (
+    create_oauth_stdio_bridge,
+    run_oauth_stdio_bridge,
+)
 from openhands.agent_server.mcp_oauth_store import (
     MCPSettingsOAuthTokenStore,
     SettingsBackedMCPToolProvider,
@@ -870,6 +875,111 @@ def test_settings_backed_provider_writes_back_tokens_refreshed_on_connect(
     assert state["tokens"]["refresh_token"] != "issued-refresh-token"
     assert state["client_info"]["client_id"] == "installed-client"
     assert state["token_expires_at"] > time.time()
+
+
+@pytest.mark.asyncio
+async def test_oauth_stdio_bridge_refreshes_at_startup_and_after_401(
+    tmp_path: Path,
+    oauth_provider: InMemoryOAuthProvider,
+    protected_oauth_mcp_server: str,
+):
+    config = _hosted_config(tmp_path)
+    client_info = _installed_client(oauth_provider)
+    oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
+        token="issued-refresh-token",
+        client_id="installed-client",
+        scopes=["mail.read"],
+    )
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={
+            "mcp_config": _expired_inline_oauth_server(
+                protected_oauth_mcp_server,
+                client_info,
+                "issued-refresh-token",
+            )
+        }
+    )
+    store = _settings_store(config)
+    store.save(settings)
+    bridge = create_oauth_stdio_bridge(
+        config,
+        "mail",
+        protected_oauth_mcp_server,
+    )
+
+    async with Client(bridge) as client:
+        tools = await client.list_tools()
+        first = store.load()
+        assert first is not None
+        first_auth = first.agent_settings.mcp_config["mail"].oauth_auth
+        assert first_auth is not None
+        assert first_auth.state is not None
+        assert first_auth.state.tokens is not None
+        first_access = first_auth.state.tokens.access_token
+        first_refresh = first_auth.state.tokens.refresh_token
+        assert first_access is not None
+        assert first_refresh is not None
+        oauth_provider.access_tokens.pop(first_access.get_secret_value())
+
+        result = await client.call_tool(
+            "read_subject",
+            {"subject": "rotated during conversation"},
+        )
+
+    assert [tool.name for tool in tools] == ["read_subject"]
+    content = result.content[0]
+    assert isinstance(content, mcp_types.TextContent)
+    assert content.text == "OAuth mail subject: rotated during conversation"
+    second = store.load()
+    assert second is not None
+    second_auth = second.agent_settings.mcp_config["mail"].oauth_auth
+    assert second_auth is not None
+    assert second_auth.state is not None
+    assert second_auth.state.tokens is not None
+    second_access = second_auth.state.tokens.access_token
+    second_refresh = second_auth.state.tokens.refresh_token
+    assert second_access is not None
+    assert second_refresh is not None
+    assert second_access.get_secret_value() != first_access.get_secret_value()
+    assert second_refresh.get_secret_value() != first_refresh.get_secret_value()
+
+
+def test_oauth_stdio_bridge_fails_actionably_without_settings_state(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+
+    with pytest.raises(
+        MCPError,
+        match="Authorize the connection again before starting the conversation",
+    ):
+        create_oauth_stdio_bridge(
+            config,
+            "atlassian-rovo",
+            "https://mcp.atlassian.com/v1/mcp",
+        )
+
+
+def test_oauth_stdio_bridge_starts_clean_stdio_without_banner(
+    capsys: pytest.CaptureFixture[str],
+):
+    bridge = patch(
+        "openhands.agent_server.mcp_oauth_stdio_bridge.create_oauth_stdio_bridge"
+    )
+    with bridge as create_bridge:
+        run_oauth_stdio_bridge(
+            Config(session_api_keys=[]),
+            "atlassian-rovo",
+            "https://mcp.atlassian.com/v1/mcp",
+        )
+
+    create_bridge.return_value.run.assert_called_once_with(
+        transport="stdio",
+        show_banner=False,
+    )
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("stored_client", [True, False])

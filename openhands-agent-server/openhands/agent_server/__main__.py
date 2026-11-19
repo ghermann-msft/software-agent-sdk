@@ -294,6 +294,21 @@ def main() -> None:
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--mcp-oauth-bridge",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-oauth-bridge-name",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-oauth-bridge-url",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
 
@@ -308,6 +323,23 @@ def main() -> None:
         if args.mcp_bridge_scope is not None:
             bridge_kwargs["scope"] = args.mcp_bridge_scope
         run_azure_workload_identity_bridge(**bridge_kwargs)
+        return
+
+    if args.mcp_oauth_bridge:
+        if args.mcp_oauth_bridge_name is None:
+            parser.error("--mcp-oauth-bridge-name is required for the OAuth MCP bridge")
+        if args.mcp_oauth_bridge_url is None:
+            parser.error("--mcp-oauth-bridge-url is required for the OAuth MCP bridge")
+        from openhands.agent_server.config import load_config
+        from openhands.agent_server.mcp_oauth_stdio_bridge import (
+            run_oauth_stdio_bridge,
+        )
+
+        run_oauth_stdio_bridge(
+            load_config(),
+            args.mcp_oauth_bridge_name,
+            args.mcp_oauth_bridge_url,
+        )
         return
 
     # Handle browser check (should run without importing user modules)

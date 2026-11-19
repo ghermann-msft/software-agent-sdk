@@ -856,9 +856,33 @@ def _azure_workload_identity_bridge_server(
     )
 
 
+def _oauth_bridge_server(name: str, server: MCPServer) -> McpServerStdio:
+    assert server.url is not None
+    bridge_args = [
+        "--mcp-oauth-bridge",
+        "--mcp-oauth-bridge-name",
+        name,
+        "--mcp-oauth-bridge-url",
+        server.url,
+    ]
+    executable_name = Path(sys.executable).name
+    if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
+        args = bridge_args
+    else:
+        args = ["-m", "openhands.agent_server", *bridge_args]
+    return McpServerStdio(
+        name=name,
+        command=sys.executable,
+        args=args,
+        env=[EnvVariable(name="OPENHANDS_SUPPRESS_BANNER", value="1")],
+    )
+
+
 def _mcp_config_to_acp_servers(
     mcp_config: dict[str, MCPServer],
     mcp_capabilities: Any,
+    *,
+    bridge_oauth: bool = False,
 ) -> list[_ACPMcpServer]:
     """Translate OpenHands MCP servers into ACP MCP server objects.
 
@@ -921,6 +945,9 @@ def _mcp_config_to_acp_servers(
                         server.auth,
                     )
                 )
+                continue
+            if bridge_oauth and isinstance(server.auth, MCPOAuthAuthCredential):
+                result.append(_oauth_bridge_server(name, server))
                 continue
             headers = _remote_mcp_headers(server, name)
             is_sse = server.effective_transport == "sse"
@@ -2837,7 +2864,11 @@ class ACPAgent(AgentBase):
             return None
         directory = self._acp_file_secret_dir(state, provider.key)
         path = directory / "additional-mcp-config.json"
-        servers = _mcp_config_to_acp_servers(self.mcp_config, None)
+        servers = _mcp_config_to_acp_servers(
+            self.mcp_config,
+            None,
+            bridge_oauth=True,
+        )
         mcp_servers = _stdio_mcp_servers_to_copilot_config(servers, self.mcp_config)
         if not mcp_servers:
             path.unlink(missing_ok=True)
@@ -3455,8 +3486,15 @@ class ACPAgent(AgentBase):
                 session_caps is not None
                 and session_caps.additional_directories is not None
             )
-            acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
-            if launch_provider is not None and launch_provider.key == "copilot-cli":
+            is_copilot = (
+                launch_provider is not None and launch_provider.key == "copilot-cli"
+            )
+            acp_mcp_servers = _mcp_config_to_acp_servers(
+                self.mcp_config,
+                mcp_caps,
+                bridge_oauth=is_copilot,
+            )
+            if is_copilot:
                 acp_mcp_servers[:] = [
                     server
                     for server in acp_mcp_servers

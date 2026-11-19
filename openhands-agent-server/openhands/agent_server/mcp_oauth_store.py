@@ -124,6 +124,7 @@ class MCPSettingsOAuthTokenStore:
         cipher: Cipher | None = None,
         write_back_webhooks: Sequence[WebhookSpec] = (),
         session_api_key: str | None = None,
+        prefer_seed: bool = False,
     ):
         self._settings_store = settings_store
         self._seeded: dict[str, MCPOAuthState] = {}
@@ -131,6 +132,7 @@ class MCPSettingsOAuthTokenStore:
         self._seeded_lock = threading.Lock()
         self._write_back_webhooks = tuple(write_back_webhooks)
         self._session_api_key = session_api_key
+        self._prefer_seed = prefer_seed
         for server in (seed_mcp_config or {}).values():
             oauth_auth = server.oauth_auth
             if server.url is None or oauth_auth is None:
@@ -155,6 +157,10 @@ class MCPSettingsOAuthTokenStore:
         field = _state_field_for_fastmcp_key(key, collection)
         if field is None:
             return None, None
+
+        seeded = self._seeded_state(key)
+        if self._prefer_seed and seeded is not None:
+            return seeded.get_token_storage_value(field), None
 
         settings = self._settings_store.load()
         mcp_config = settings.agent_settings.mcp_config if settings else {}
@@ -194,6 +200,15 @@ class MCPSettingsOAuthTokenStore:
         seeded_updates: list[tuple[str, MCPOAuthState]] = []
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
+            if self._prefer_seed:
+                server_url = _server_url_from_fastmcp_key(key)
+                with self._seeded_lock:
+                    seeded = self._seeded.get(server_url)
+                    if seeded is not None:
+                        updated = seeded.with_token_storage_value(field, stored_value)
+                        self._seeded[server_url] = updated
+                        seeded_updates.append((server_url, updated))
+                        return settings
             mcp_config = settings.agent_settings.mcp_config
             match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
@@ -305,6 +320,14 @@ class MCPSettingsOAuthTokenStore:
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
             nonlocal deleted
+            if self._prefer_seed:
+                server_url = _server_url_from_fastmcp_key(key)
+                with self._seeded_lock:
+                    seeded = self._seeded.get(server_url)
+                    if seeded is not None:
+                        seeded, deleted = seeded.without_token_storage_value(field)
+                        self._seeded[server_url] = seeded
+                        return settings
             mcp_config = settings.agent_settings.mcp_config
             match = _find_matching_oauth_server(mcp_config, key)
             if match is None:

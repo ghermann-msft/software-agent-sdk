@@ -8949,8 +8949,9 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer oauth-access-token")
         ]
 
-    def test_copilot_oauth_uses_local_refreshing_bridge(self):
+    def test_copilot_oauth_uses_local_refreshing_bridge(self, tmp_path):
         secret = "oauth-access-token"
+        seed_path = tmp_path / "oauth-seed.json"
         cfg = self._config(
             {
                 "atlassian-rovo": {
@@ -8967,6 +8968,7 @@ class TestMcpConfigToAcpServers:
             cfg,
             self._caps(http=True, sse=False),
             bridge_oauth=True,
+            oauth_seed_paths={"atlassian-rovo": seed_path},
         )
 
         assert len(out) == 1
@@ -8974,7 +8976,7 @@ class TestMcpConfigToAcpServers:
         assert server.name == "atlassian-rovo"
         assert server.command == acp_agent_module.sys.executable
         assert "--mcp-oauth-bridge" in server.args
-        assert "--mcp-oauth-bridge-url" in server.args
+        assert server.args[-2:] == ["--mcp-oauth-bridge-seed", str(seed_path)]
         assert [(item.name, item.value) for item in server.env] == [
             ("OPENHANDS_SUPPRESS_BANNER", "1")
         ]
@@ -8983,7 +8985,8 @@ class TestMcpConfigToAcpServers:
         assert "Authorization" not in payload
         assert "Bearer" not in payload
 
-    def test_oauth_bridge_uses_packaged_agent_server_executable(self):
+    def test_oauth_bridge_uses_packaged_agent_server_executable(self, tmp_path):
+        seed_path = tmp_path / "oauth-seed.json"
         cfg = self._config(
             {
                 "atlassian-rovo": {
@@ -9002,15 +9005,14 @@ class TestMcpConfigToAcpServers:
                 cfg,
                 self._caps(http=True, sse=False),
                 bridge_oauth=True,
+                oauth_seed_paths={"atlassian-rovo": seed_path},
             )
 
         assert out[0].command == "/usr/local/bin/openhands-agent-server"
         assert out[0].args == [
             "--mcp-oauth-bridge",
-            "--mcp-oauth-bridge-name",
-            "atlassian-rovo",
-            "--mcp-oauth-bridge-url",
-            "https://mcp.atlassian.com/v1/mcp",
+            "--mcp-oauth-bridge-seed",
+            str(seed_path),
         ]
 
     def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
@@ -9394,6 +9396,13 @@ class TestACPMcpForwarding:
         oauth_bridge = config["mcpServers"]["atlassian-rovo"]
         assert "--mcp-oauth-bridge" in oauth_bridge["args"]
         assert oauth_bridge["env"] == {"OPENHANDS_SUPPRESS_BANNER": "1"}
+        seed_path = Path(oauth_bridge["args"][-1])
+        seed = seed_path.read_text()
+        assert seed_path.is_absolute()
+        assert "atlassian-access-do-not-log" in seed
+        assert "atlassian-refresh-do-not-log" in seed
+        if os.name != "nt":
+            assert seed_path.stat().st_mode & 0o777 == 0o600
         serialized = json.dumps(config)
         assert "atlassian-access-do-not-log" not in serialized
         assert "atlassian-refresh-do-not-log" not in serialized
@@ -9405,6 +9414,8 @@ class TestACPMcpForwarding:
         assert "atlassian-refresh-do-not-log" not in caplog.text
         servers = conn.new_session.call_args.kwargs["mcp_servers"]
         assert [server.name for server in servers] == ["atlassian"]
+        agent.close()
+        assert not seed_path.exists()
 
     def test_copilot_resume_recreates_stdio_startup_config(self, tmp_path):
         agent = _make_agent(
@@ -9440,10 +9451,52 @@ class TestACPMcpForwarding:
         config = json.loads(config_path.read_text())
         assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == ("current-secret")
         assert "--mcp-oauth-bridge" in (config["mcpServers"]["atlassian-rovo"]["args"])
+        seed_path = Path(config["mcpServers"]["atlassian-rovo"]["args"][-1])
+        assert "current-access" in seed_path.read_text()
+        assert "current-refresh" in seed_path.read_text()
         assert "current-access" not in config_path.read_text()
         assert "current-refresh" not in config_path.read_text()
         conn.load_session.assert_awaited_once()
         assert conn.load_session.call_args.kwargs["mcp_servers"] == []
+        agent.close()
+        assert not seed_path.exists()
+
+    def test_copilot_oauth_bridges_use_distinct_deterministic_seeds(self, tmp_path):
+        server = {
+            "url": "https://mcp.example.com/mcp",
+            "auth": {
+                "strategy": "oauth2",
+                "state": {"tokens": {"access_token": "access-token"}},
+            },
+        }
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={"first": server, "second": server},
+        )
+        state = _make_state(tmp_path)
+
+        first_config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert first_config_path is not None
+        first_config = json.loads(first_config_path.read_text())
+        first_paths = {
+            name: Path(value["args"][-1])
+            for name, value in first_config["mcpServers"].items()
+        }
+
+        second_config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert second_config_path is not None
+        assert second_config_path == first_config_path
+        second_config = json.loads(second_config_path.read_text())
+        second_paths = {
+            name: Path(value["args"][-1])
+            for name, value in second_config["mcpServers"].items()
+        }
+
+        assert first_paths == second_paths
+        assert len(set(first_paths.values())) == 2
+        assert all(path.is_file() for path in first_paths.values())
+        agent.close()
+        assert all(not path.exists() for path in first_paths.values())
 
     def test_non_copilot_provider_keeps_stdio_in_session_payload(self, tmp_path):
         agent = _make_agent(

@@ -20,6 +20,7 @@ import asyncio
 import atexit
 import contextlib
 import functools
+import hashlib
 import inspect
 import json
 import os
@@ -35,6 +36,7 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
+    Mapping,
     Sequence,
 )
 from concurrent.futures import Future
@@ -149,7 +151,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import SecretField
+from openhands.sdk.utils.pydantic_secrets import SecretField, client_context
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -856,14 +858,11 @@ def _azure_workload_identity_bridge_server(
     )
 
 
-def _oauth_bridge_server(name: str, server: MCPServer) -> McpServerStdio:
-    assert server.url is not None
+def _oauth_bridge_server(name: str, seed_path: Path) -> McpServerStdio:
     bridge_args = [
         "--mcp-oauth-bridge",
-        "--mcp-oauth-bridge-name",
-        name,
-        "--mcp-oauth-bridge-url",
-        server.url,
+        "--mcp-oauth-bridge-seed",
+        str(seed_path),
     ]
     executable_name = Path(sys.executable).name
     if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
@@ -883,6 +882,7 @@ def _mcp_config_to_acp_servers(
     mcp_capabilities: Any,
     *,
     bridge_oauth: bool = False,
+    oauth_seed_paths: Mapping[str, Path] | None = None,
 ) -> list[_ACPMcpServer]:
     """Translate OpenHands MCP servers into ACP MCP server objects.
 
@@ -903,6 +903,9 @@ def _mcp_config_to_acp_servers(
     - ``url`` with Azure workload-identity auth → local
       :class:`McpServerStdio` bridge. The bridge owns the remote transport and
       token lifecycle, so no credential enters the ACP payload.
+    - ``url`` with OAuth auth and ``bridge_oauth=True`` → local
+      :class:`McpServerStdio` bridge seeded through a private file. The bridge
+      owns refresh and rotated-state write-back for its full process lifetime.
     - ``url`` present, transport ``sse`` → :class:`SseMcpServer`, forwarded only
       when the server advertises ``mcp_capabilities.sse``.
     - ``url`` present, any other / absent transport → :class:`HttpMcpServer`
@@ -947,7 +950,10 @@ def _mcp_config_to_acp_servers(
                 )
                 continue
             if bridge_oauth and isinstance(server.auth, MCPOAuthAuthCredential):
-                result.append(_oauth_bridge_server(name, server))
+                seed_path = (oauth_seed_paths or {}).get(name)
+                if seed_path is None:
+                    raise ValueError(f"OAuth MCP bridge seed is missing for {name!r}")
+                result.append(_oauth_bridge_server(name, seed_path))
                 continue
             headers = _remote_mcp_headers(server, name)
             is_sse = server.effective_transport == "sse"
@@ -2247,6 +2253,7 @@ class ACPAgent(AgentBase):
     _replace_file_credentials_on_next_materialisation: set[str] = PrivateAttr(
         default_factory=set
     )
+    _oauth_bridge_seed_paths: set[Path] = PrivateAttr(default_factory=set)
     _atexit_callback: Callable[[], None] | None = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
@@ -2278,6 +2285,7 @@ class ACPAgent(AgentBase):
             or self._process is not None
             or self._conn is not None
             or bool(self._file_credential_lifecycles)
+            or bool(self._oauth_bridge_seed_paths)
         )
 
     def _register_atexit_cleanup(self, *, replace: bool = False) -> None:
@@ -2864,18 +2872,55 @@ class ACPAgent(AgentBase):
             return None
         directory = self._acp_file_secret_dir(state, provider.key)
         path = directory / "additional-mcp-config.json"
+        oauth_seed_dir = directory / "mcp-oauth"
+        oauth_seed_paths: dict[str, Path] = {}
+        oauth_seed_payloads: dict[Path, str] = {}
+        for name, server in self.mcp_config.items():
+            if (
+                not server.enabled
+                or server.url is None
+                or not isinstance(server.auth, MCPOAuthAuthCredential)
+            ):
+                continue
+            identity = hashlib.sha256(f"{name}\0{server.url}".encode()).hexdigest()[:24]
+            seed_path = oauth_seed_dir / f"{identity}.json"
+            oauth_seed_paths[name] = seed_path
+            oauth_seed_payloads[seed_path] = json.dumps(
+                {
+                    "name": name,
+                    "server": server.model_dump(
+                        mode="json",
+                        context=client_context("plaintext"),
+                        exclude_none=True,
+                    ),
+                },
+                separators=(",", ":"),
+            )
         servers = _mcp_config_to_acp_servers(
             self.mcp_config,
             None,
             bridge_oauth=True,
+            oauth_seed_paths=oauth_seed_paths,
         )
         mcp_servers = _stdio_mcp_servers_to_copilot_config(servers, self.mcp_config)
-        if not mcp_servers:
-            path.unlink(missing_ok=True)
-            return None
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)
         directory.parent.chmod(0o700)
+        if oauth_seed_payloads or oauth_seed_dir.exists():
+            if oauth_seed_payloads:
+                oauth_seed_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                oauth_seed_dir.chmod(0o700)
+                for seed_path, payload in oauth_seed_payloads.items():
+                    write_secret_file(seed_path, payload)
+            for stale_path in oauth_seed_dir.iterdir():
+                if stale_path.is_file() and stale_path not in oauth_seed_payloads:
+                    stale_path.unlink()
+            if not oauth_seed_payloads:
+                oauth_seed_dir.rmdir()
+        self._oauth_bridge_seed_paths = set(oauth_seed_payloads)
+        if not mcp_servers:
+            path.unlink(missing_ok=True)
+            return None
         write_secret_file(
             path,
             json.dumps({"mcpServers": mcp_servers}, separators=(",", ":")),
@@ -3489,17 +3534,24 @@ class ACPAgent(AgentBase):
             is_copilot = (
                 launch_provider is not None and launch_provider.key == "copilot-cli"
             )
-            acp_mcp_servers = _mcp_config_to_acp_servers(
-                self.mcp_config,
-                mcp_caps,
-                bridge_oauth=is_copilot,
-            )
+            session_mcp_config = self.mcp_config
             if is_copilot:
-                acp_mcp_servers[:] = [
-                    server
-                    for server in acp_mcp_servers
-                    if not isinstance(server, McpServerStdio)
-                ]
+                session_mcp_config = {
+                    name: server
+                    for name, server in self.mcp_config.items()
+                    if server.command is None
+                    and not isinstance(
+                        server.auth,
+                        (
+                            MCPOAuthAuthCredential,
+                            MCPAzureWorkloadIdentityAuthCredential,
+                        ),
+                    )
+                }
+            acp_mcp_servers = _mcp_config_to_acp_servers(
+                session_mcp_config,
+                mcp_caps,
+            )
             if acp_mcp_servers:
                 logger.info(
                     "Forwarding %d MCP server(s) to ACP session: %s",
@@ -5155,6 +5207,15 @@ class ACPAgent(AgentBase):
             with self._file_credential_lock:
                 if not credential_failures:
                     self._file_credential_bindings = {}
+
+        seed_dirs: set[Path] = set()
+        for seed_path in self._oauth_bridge_seed_paths:
+            seed_dirs.add(seed_path.parent)
+            seed_path.unlink(missing_ok=True)
+        self._oauth_bridge_seed_paths = set()
+        for seed_dir in seed_dirs:
+            with contextlib.suppress(OSError):
+                seed_dir.rmdir()
 
         if self._executor is not None and not credential_failures:
             try:

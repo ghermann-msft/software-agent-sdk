@@ -40,6 +40,7 @@ from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_conf
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import create_mcp_tools
+from openhands.sdk.utils.pydantic_secrets import client_context
 
 
 def _settings_store(config: Config) -> FileSettingsStore:
@@ -776,6 +777,25 @@ def _expired_inline_oauth_server(
     )
 
 
+def _write_oauth_bridge_seed(
+    path: Path,
+    name: str,
+    server: MCPServer,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "server": server.model_dump(
+                    mode="json",
+                    context=client_context("plaintext"),
+                    exclude_none=True,
+                ),
+            }
+        )
+    )
+
+
 def test_settings_backed_provider_keeps_stored_state_when_refresh_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -882,6 +902,7 @@ async def test_oauth_stdio_bridge_refreshes_at_startup_and_after_401(
     tmp_path: Path,
     oauth_provider: InMemoryOAuthProvider,
     protected_oauth_mcp_server: str,
+    write_backs: list[dict],
 ):
     config = _hosted_config(tmp_path)
     client_info = _installed_client(oauth_provider)
@@ -890,37 +911,26 @@ async def test_oauth_stdio_bridge_refreshes_at_startup_and_after_401(
         client_id="installed-client",
         scopes=["mail.read"],
     )
-    settings = PersistedSettings()
-    settings.agent_settings = settings.agent_settings.model_copy(
-        update={
-            "mcp_config": _expired_inline_oauth_server(
-                protected_oauth_mcp_server,
-                client_info,
-                "issued-refresh-token",
-            )
-        }
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server,
+        client_info,
+        "issued-refresh-token",
     )
     store = _settings_store(config)
-    store.save(settings)
-    bridge = create_oauth_stdio_bridge(
-        config,
-        "mail",
-        protected_oauth_mcp_server,
-    )
+    store.save(PersistedSettings())
+    seed_path = tmp_path / "org-injected-oauth.json"
+    _write_oauth_bridge_seed(seed_path, "mail", mcp_config["mail"])
+    bridge = create_oauth_stdio_bridge(config, seed_path)
 
     async with Client(bridge) as client:
         tools = await client.list_tools()
-        first = store.load()
-        assert first is not None
-        first_auth = first.agent_settings.mcp_config["mail"].oauth_auth
-        assert first_auth is not None
-        assert first_auth.state is not None
-        assert first_auth.state.tokens is not None
-        first_access = first_auth.state.tokens.access_token
-        first_refresh = first_auth.state.tokens.refresh_token
-        assert first_access is not None
-        assert first_refresh is not None
-        oauth_provider.access_tokens.pop(first_access.get_secret_value())
+        local_settings = store.load()
+        assert local_settings is not None
+        assert local_settings.agent_settings.mcp_config == {}
+        first_tokens = write_backs[-1]["oauth_state"]["tokens"]
+        first_access = first_tokens["access_token"]
+        first_refresh = first_tokens["refresh_token"]
+        oauth_provider.access_tokens.pop(first_access)
 
         result = await client.call_tool(
             "read_subject",
@@ -931,35 +941,36 @@ async def test_oauth_stdio_bridge_refreshes_at_startup_and_after_401(
     content = result.content[0]
     assert isinstance(content, mcp_types.TextContent)
     assert content.text == "OAuth mail subject: rotated during conversation"
-    second = store.load()
-    assert second is not None
-    second_auth = second.agent_settings.mcp_config["mail"].oauth_auth
-    assert second_auth is not None
-    assert second_auth.state is not None
-    assert second_auth.state.tokens is not None
-    second_access = second_auth.state.tokens.access_token
-    second_refresh = second_auth.state.tokens.refresh_token
-    assert second_access is not None
-    assert second_refresh is not None
-    assert second_access.get_secret_value() != first_access.get_secret_value()
-    assert second_refresh.get_secret_value() != first_refresh.get_secret_value()
+    second_tokens = write_backs[-1]["oauth_state"]["tokens"]
+    assert second_tokens["access_token"] != first_access
+    assert second_tokens["refresh_token"] != first_refresh
+    local_settings = store.load()
+    assert local_settings is not None
+    assert local_settings.agent_settings.mcp_config == {}
 
 
-def test_oauth_stdio_bridge_fails_actionably_without_settings_state(
+def test_oauth_stdio_bridge_rejects_relative_seed_path(
     tmp_path: Path,
 ):
     config = _hosted_config(tmp_path)
-    _settings_store(config).save(PersistedSettings())
 
-    with pytest.raises(
-        MCPError,
-        match="Authorize the connection again before starting the conversation",
-    ):
-        create_oauth_stdio_bridge(
-            config,
-            "atlassian-rovo",
-            "https://mcp.atlassian.com/v1/mcp",
-        )
+    with pytest.raises(ValueError, match="seed path must be absolute"):
+        create_oauth_stdio_bridge(config, "relative-seed.json")
+
+
+def test_oauth_stdio_bridge_does_not_disclose_invalid_seed(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+    seed_path = tmp_path / "invalid-seed.json"
+    secret = "refresh-token-must-not-appear"
+    seed_path.write_text(f'{{"secret":"{secret}"}}')
+
+    with pytest.raises(ValueError) as exc_info:
+        create_oauth_stdio_bridge(config, seed_path)
+
+    assert str(exc_info.value) == "OAuth MCP bridge seed file is invalid"
+    assert secret not in str(exc_info.value)
 
 
 def test_oauth_stdio_bridge_starts_clean_stdio_without_banner(
@@ -971,8 +982,7 @@ def test_oauth_stdio_bridge_starts_clean_stdio_without_banner(
     with bridge as create_bridge:
         run_oauth_stdio_bridge(
             Config(session_api_keys=[]),
-            "atlassian-rovo",
-            "https://mcp.atlassian.com/v1/mcp",
+            Path("C:\\workspace\\conversation\\acp\\oauth-seed.json"),
         )
 
     create_bridge.return_value.run.assert_called_once_with(

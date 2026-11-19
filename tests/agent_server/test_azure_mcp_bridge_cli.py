@@ -31,13 +31,12 @@ def test_agent_server_runs_packaged_azure_mcp_bridge() -> None:
 
 
 def test_agent_server_runs_packaged_oauth_mcp_bridge() -> None:
+    seed_path = "C:\\workspace\\conversation\\acp\\oauth-seed.json"
     argv = [
         "openhands-agent-server",
         "--mcp-oauth-bridge",
-        "--mcp-oauth-bridge-name",
-        "atlassian-rovo",
-        "--mcp-oauth-bridge-url",
-        "https://mcp.atlassian.com/v1/mcp",
+        "--mcp-oauth-bridge-seed",
+        seed_path,
     ]
 
     with (
@@ -52,8 +51,7 @@ def test_agent_server_runs_packaged_oauth_mcp_bridge() -> None:
 
     run_bridge.assert_called_once_with(
         load_config.return_value,
-        "atlassian-rovo",
-        "https://mcp.atlassian.com/v1/mcp",
+        seed_path,
     )
 
 

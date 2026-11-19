@@ -300,12 +300,7 @@ def main() -> None:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--mcp-oauth-bridge-name",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--mcp-oauth-bridge-url",
+        "--mcp-oauth-bridge-seed",
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -326,10 +321,8 @@ def main() -> None:
         return
 
     if args.mcp_oauth_bridge:
-        if args.mcp_oauth_bridge_name is None:
-            parser.error("--mcp-oauth-bridge-name is required for the OAuth MCP bridge")
-        if args.mcp_oauth_bridge_url is None:
-            parser.error("--mcp-oauth-bridge-url is required for the OAuth MCP bridge")
+        if args.mcp_oauth_bridge_seed is None:
+            parser.error("--mcp-oauth-bridge-seed is required for the OAuth MCP bridge")
         from openhands.agent_server.config import load_config
         from openhands.agent_server.mcp_oauth_stdio_bridge import (
             run_oauth_stdio_bridge,
@@ -337,8 +330,7 @@ def main() -> None:
 
         run_oauth_stdio_bridge(
             load_config(),
-            args.mcp_oauth_bridge_name,
-            args.mcp_oauth_bridge_url,
+            args.mcp_oauth_bridge_seed,
         )
         return
 

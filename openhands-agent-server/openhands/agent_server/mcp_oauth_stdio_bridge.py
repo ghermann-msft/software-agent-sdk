@@ -68,9 +68,13 @@ def create_oauth_stdio_bridge(
         raise TypeError("OAuth MCP bridge requires a remote MCP server")
     if not isinstance(remote.auth, NonInteractiveMCPOAuth):
         raise TypeError("OAuth MCP bridge requires noninteractive OAuth")
-    return create_proxy(remote.to_transport(), name="OpenHands OAuth MCP Bridge")
+    return create_proxy(
+        remote.to_transport(),
+        mode="auto",
+        name="OpenHands OAuth MCP Bridge",
+    )
 
 
 def run_oauth_stdio_bridge(config: Config, seed_path: str | Path) -> None:
     bridge = create_oauth_stdio_bridge(config, seed_path)
-    bridge.run(transport="stdio", show_banner=False)
+    bridge.run(transport="stdio", show_banner=False, stateless=False)

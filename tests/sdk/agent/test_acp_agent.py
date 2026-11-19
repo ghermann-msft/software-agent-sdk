@@ -83,7 +83,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
-from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_install_catalog import (
     ACPInstallSpec,
@@ -93,7 +93,10 @@ from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from openhands.sdk.utils.pydantic_secrets import (
+    REDACTED_SECRET_VALUE,
+    client_context,
+)
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -167,13 +170,14 @@ def test_file_credential_flush_does_not_hold_agent_lock(tmp_path):
     assert failures == {}
 
 
-def _make_state(tmp_path) -> ConversationState:
+def _make_state(tmp_path, *, cipher: Cipher | None = None) -> ConversationState:
     agent = _make_agent()
     workspace = LocalWorkspace(working_dir=str(tmp_path))
     return ConversationState.create(
         id=uuid.uuid4(),
         agent=agent,
         workspace=workspace,
+        cipher=cipher,
     )
 
 
@@ -9498,6 +9502,59 @@ class TestACPMcpForwarding:
         assert all(path.is_file() for path in first_paths.values())
         agent.close()
         assert all(not path.exists() for path in first_paths.values())
+
+    def test_copilot_oauth_seed_decrypts_parent_cipher_before_handoff(
+        self, tmp_path, caplog
+    ):
+        cipher = Cipher(secret_key="parent-agent-server-secret-key")
+        plaintext_server = MCPServer.model_validate(
+            {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "client_secret_post",
+                        "client_secret": "oauth-client-secret",
+                    },
+                    "state": {
+                        "tokens": {
+                            "access_token": "oauth-access-token",
+                            "refresh_token": "oauth-refresh-token",
+                        },
+                        "client_info": {
+                            "client_id": "oauth-client-id",
+                            "client_secret": "registered-client-secret",
+                        },
+                    },
+                },
+            }
+        )
+        encrypted_server = MCPServer.model_validate(
+            plaintext_server.model_dump(
+                mode="json",
+                context=client_context("encrypted", cipher),
+            )
+        )
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={"atlassian-rovo": encrypted_server},
+        )
+        state = _make_state(tmp_path, cipher=cipher)
+
+        config_path = agent._materialize_copilot_stdio_mcp_config(state)
+
+        assert config_path is not None
+        config = json.loads(config_path.read_text())
+        seed_path = Path(config["mcpServers"]["atlassian-rovo"]["args"][-1])
+        seed = seed_path.read_text()
+        assert "oauth-access-token" in seed
+        assert "oauth-refresh-token" in seed
+        assert "oauth-client-secret" in seed
+        assert "registered-client-secret" in seed
+        assert "gAAAAA" not in seed
+        assert "Failed to decrypt secret value" not in caplog.text
+        agent.close()
 
     def test_non_copilot_provider_keeps_stdio_in_session_payload(self, tmp_path):
         agent = _make_agent(

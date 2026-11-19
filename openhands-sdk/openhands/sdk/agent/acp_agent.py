@@ -2886,10 +2886,11 @@ class ACPAgent(AgentBase):
             identity = hashlib.sha256(f"{name}\0{server.url}".encode()).hexdigest()[:24]
             seed_path = oauth_seed_dir / f"{identity}.json"
             oauth_seed_paths[name] = seed_path
+            seed_server = server.with_decrypted_secrets(cipher=state._cipher)
             oauth_seed_payloads[seed_path] = json.dumps(
                 {
                     "name": name,
-                    "server": server.model_dump(
+                    "server": seed_server.model_dump(
                         mode="json",
                         context=client_context("plaintext"),
                         exclude_none=True,

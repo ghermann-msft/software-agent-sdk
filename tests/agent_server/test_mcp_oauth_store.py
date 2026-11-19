@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -16,6 +18,8 @@ import uvicorn
 from fastmcp import Client, FastMCP
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from mcp import types as mcp_types
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.auth.provider import RefreshToken
 from mcp.server.auth.settings import ClientRegistrationOptions
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull
@@ -988,8 +992,57 @@ def test_oauth_stdio_bridge_starts_clean_stdio_without_banner(
     create_bridge.return_value.run.assert_called_once_with(
         transport="stdio",
         show_banner=False,
+        stateless=False,
     )
     assert capsys.readouterr().out == ""
+
+
+def test_oauth_stdio_bridge_negotiates_remote_protocol_independently(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+    seed_path = tmp_path / "oauth-seed.json"
+    _write_oauth_bridge_seed(
+        seed_path,
+        "mail",
+        _inline_oauth_server("access-token")["mail"],
+    )
+
+    with patch(
+        "openhands.agent_server.mcp_oauth_stdio_bridge.create_proxy"
+    ) as create_proxy:
+        create_oauth_stdio_bridge(config, seed_path)
+
+    assert create_proxy.call_args.kwargs["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_oauth_stdio_bridge_accepts_copilot_protocol_version(
+    tmp_path: Path,
+):
+    seed_path = tmp_path / "oauth-seed.json"
+    server = _inline_oauth_server("access-token")["mail"]
+    _write_oauth_bridge_seed(seed_path, "mail", server)
+    env = os.environ.copy()
+    env["OPENHANDS_SUPPRESS_BANNER"] = "1"
+    env["OH_PERSISTENCE_DIR"] = str(tmp_path / "persistence")
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=[
+            "-m",
+            "openhands.agent_server",
+            "--mcp-oauth-bridge",
+            "--mcp-oauth-bridge-seed",
+            str(seed_path),
+        ],
+        env=env,
+    )
+
+    async with stdio_client(parameters) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            initialized = await session.initialize()
+
+    assert initialized.protocol_version == "2025-11-25"
 
 
 @pytest.mark.parametrize("stored_client", [True, False])

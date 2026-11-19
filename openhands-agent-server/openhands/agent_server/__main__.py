@@ -11,6 +11,9 @@ import uvicorn
 from uvicorn import Config
 
 from openhands.agent_server.logging_config import LOGGING_CONFIG
+from openhands.sdk.agent.acp_oauth_seeds import (
+    cleanup_stale_acp_oauth_seed_roots,
+)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -232,6 +235,7 @@ def _setup_crash_diagnostics() -> None:
 def main() -> None:
     # Set up crash diagnostics early, before any other initialization
     _setup_crash_diagnostics()
+    cleanup_stale_acp_oauth_seed_roots()
 
     parser = argparse.ArgumentParser(description="OpenHands Agent Server App")
     parser.add_argument(
@@ -282,6 +286,33 @@ def main() -> None:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--mcp-azure-workload-identity-bridge",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-azure-bridge-url",
+        dest="mcp_bridge_url",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-azure-bridge-scope",
+        dest="mcp_bridge_scope",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-oauth-bridge",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mcp-oauth-bridge-seed",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
 
@@ -291,6 +322,33 @@ def main() -> None:
         )
 
         run_hindsight_mcp_bridge()
+        return
+
+    if args.mcp_azure_workload_identity_bridge:
+        if args.mcp_bridge_url is None:
+            parser.error("--mcp-azure-bridge-url is required for the Azure MCP bridge")
+        from openhands.sdk.mcp.azure_stdio_bridge import (
+            run_azure_workload_identity_bridge,
+        )
+
+        bridge_kwargs = {"url": args.mcp_bridge_url}
+        if args.mcp_bridge_scope is not None:
+            bridge_kwargs["scope"] = args.mcp_bridge_scope
+        run_azure_workload_identity_bridge(**bridge_kwargs)
+        return
+
+    if args.mcp_oauth_bridge:
+        if args.mcp_oauth_bridge_seed is None:
+            parser.error("--mcp-oauth-bridge-seed is required for the OAuth MCP bridge")
+        from openhands.agent_server.config import load_config
+        from openhands.agent_server.mcp_oauth_stdio_bridge import (
+            run_oauth_stdio_bridge,
+        )
+
+        run_oauth_stdio_bridge(
+            load_config(),
+            args.mcp_oauth_bridge_seed,
+        )
         return
 
     # Handle browser check (should run without importing user modules)

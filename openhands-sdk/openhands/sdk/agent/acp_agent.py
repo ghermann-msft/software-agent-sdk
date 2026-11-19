@@ -20,11 +20,13 @@ import asyncio
 import atexit
 import contextlib
 import functools
+import hashlib
 import inspect
 import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -34,6 +36,7 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
+    Mapping,
     Sequence,
 )
 from concurrent.futures import Future
@@ -107,6 +110,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
+from openhands.sdk.agent.acp_oauth_seeds import get_acp_oauth_seed_dir
 from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
@@ -128,7 +132,11 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
+from openhands.sdk.mcp.config import (
+    MCPAzureWorkloadIdentityAuthCredential,
+    MCPOAuthAuthCredential,
+    MCPServer,
+)
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -144,11 +152,12 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import SecretField
+from openhands.sdk.utils.pydantic_secrets import SecretField, client_context
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
+_WINDOWS = os.name == "nt"
 
 maybe_init_laminar()
 
@@ -195,6 +204,7 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # can try to resolve against the parent package instead of the requested one.
 _INHERITED_NPM_ENV_EXACT: frozenset[str] = frozenset({"INIT_CWD"})
 _INHERITED_NPM_ENV_PREFIXES: tuple[str, ...] = ("npm_", "NPM_")
+_ACP_NPM_CACHE_DIR_ENV = "OPENHANDS_ACP_NPM_CACHE_DIR"
 
 # JSON-RPC error codes from the ACP server that are transient and worth
 # retrying.  These map to server-side failures (HTTP 500 equivalents) where
@@ -246,6 +256,13 @@ def _strip_inherited_npm_env(env: dict[str, str]) -> None:
             _INHERITED_NPM_ENV_PREFIXES
         ):
             env.pop(key, None)
+
+
+def _resolve_subprocess_executable(command: str) -> str:
+    """Resolve Windows executable shims before passing them to asyncio."""
+    if not _WINDOWS:
+        return command
+    return shutil.which(command) or command
 
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
@@ -812,9 +829,61 @@ def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
     return headers
 
 
+def _azure_workload_identity_bridge_server(
+    name: str,
+    server: MCPServer,
+    auth: MCPAzureWorkloadIdentityAuthCredential,
+) -> McpServerStdio:
+    assert server.url is not None
+    bridge_args = ["--url", server.url, "--scope", auth.scope]
+    executable_name = sys.executable.replace("\\", "/").rsplit("/", 1)[-1]
+    if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
+        args = [
+            "--mcp-azure-workload-identity-bridge",
+            "--mcp-azure-bridge-url",
+            server.url,
+            "--mcp-azure-bridge-scope",
+            auth.scope,
+        ]
+    else:
+        args = [
+            "-m",
+            "openhands.sdk.mcp.azure_stdio_bridge",
+            *bridge_args,
+        ]
+    return McpServerStdio(
+        name=name,
+        command=sys.executable,
+        args=args,
+        env=[EnvVariable(name="OPENHANDS_SUPPRESS_BANNER", value="1")],
+    )
+
+
+def _oauth_bridge_server(name: str, seed_path: Path) -> McpServerStdio:
+    bridge_args = [
+        "--mcp-oauth-bridge",
+        "--mcp-oauth-bridge-seed",
+        str(seed_path),
+    ]
+    executable_name = sys.executable.replace("\\", "/").rsplit("/", 1)[-1]
+    if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
+        args = bridge_args
+    else:
+        args = ["-m", "openhands.agent_server", *bridge_args]
+    return McpServerStdio(
+        name=name,
+        command=sys.executable,
+        args=args,
+        env=[EnvVariable(name="OPENHANDS_SUPPRESS_BANNER", value="1")],
+    )
+
+
 def _mcp_config_to_acp_servers(
     mcp_config: dict[str, MCPServer],
     mcp_capabilities: Any,
+    *,
+    bridge_oauth: bool = False,
+    oauth_seed_paths: Mapping[str, Path] | None = None,
 ) -> list[_ACPMcpServer]:
     """Translate OpenHands MCP servers into ACP MCP server objects.
 
@@ -832,6 +901,12 @@ def _mcp_config_to_acp_servers(
 
     - ``command`` present → :class:`McpServerStdio` (always forwarded; the
       protocol gates only the remote transports behind a capability flag).
+    - ``url`` with Azure workload-identity auth → local
+      :class:`McpServerStdio` bridge. The bridge owns the remote transport and
+      token lifecycle, so no credential enters the ACP payload.
+    - ``url`` with OAuth auth and ``bridge_oauth=True`` → local
+      :class:`McpServerStdio` bridge seeded through a private file. The bridge
+      owns refresh and rotated-state write-back for its full process lifetime.
     - ``url`` present, transport ``sse`` → :class:`SseMcpServer`, forwarded only
       when the server advertises ``mcp_capabilities.sse``.
     - ``url`` present, any other / absent transport → :class:`HttpMcpServer`
@@ -866,6 +941,21 @@ def _mcp_config_to_acp_servers(
                 )
             )
         elif server.url:
+            if isinstance(server.auth, MCPAzureWorkloadIdentityAuthCredential):
+                result.append(
+                    _azure_workload_identity_bridge_server(
+                        name,
+                        server,
+                        server.auth,
+                    )
+                )
+                continue
+            if bridge_oauth and isinstance(server.auth, MCPOAuthAuthCredential):
+                seed_path = (oauth_seed_paths or {}).get(name)
+                if seed_path is None:
+                    raise ValueError(f"OAuth MCP bridge seed is missing for {name!r}")
+                result.append(_oauth_bridge_server(name, seed_path))
+                continue
             headers = _remote_mcp_headers(server, name)
             is_sse = server.effective_transport == "sse"
             if not (sse_ok if is_sse else http_ok):
@@ -895,6 +985,28 @@ def _mcp_config_to_acp_servers(
                 "'url' (http/sse)",
                 name,
             )
+    return result
+
+
+def _stdio_mcp_servers_to_copilot_config(
+    servers: Sequence[_ACPMcpServer],
+    mcp_config: dict[str, MCPServer],
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for server in servers:
+        if not isinstance(server, McpServerStdio):
+            continue
+        config: dict[str, object] = {
+            "type": "local",
+            "command": server.command,
+            "args": list(server.args),
+            "env": {item.name: item.value for item in server.env},
+            "tools": ["*"],
+        }
+        source = mcp_config.get(server.name)
+        if source is not None and source.cwd is not None:
+            config["cwd"] = source.cwd
+        result[server.name] = config
     return result
 
 
@@ -2142,6 +2254,7 @@ class ACPAgent(AgentBase):
     _replace_file_credentials_on_next_materialisation: set[str] = PrivateAttr(
         default_factory=set
     )
+    _oauth_bridge_seed_paths: set[Path] = PrivateAttr(default_factory=set)
     _atexit_callback: Callable[[], None] | None = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
@@ -2173,6 +2286,7 @@ class ACPAgent(AgentBase):
             or self._process is not None
             or self._conn is not None
             or bool(self._file_credential_lifecycles)
+            or bool(self._oauth_bridge_seed_paths)
         )
 
     def _register_atexit_cleanup(self, *, replace: bool = False) -> None:
@@ -2734,6 +2848,14 @@ class ACPAgent(AgentBase):
         return Path(os.path.abspath(root))
 
     def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+        override = os.environ.get(_ACP_NPM_CACHE_DIR_ENV)
+        if override:
+            cache_dir = Path(override)
+            if not cache_dir.is_absolute():
+                raise ValueError(f"{_ACP_NPM_CACHE_DIR_ENV} must be an absolute path")
+            cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            cache_dir.chmod(0o700)
+            return cache_dir
         if state.persistence_dir:
             root = Path(state.persistence_dir).parent
         else:
@@ -2741,6 +2863,92 @@ class ACPAgent(AgentBase):
         cache_dir = root / "npm-cache"
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(os.path.abspath(cache_dir))
+
+    def _materialize_copilot_stdio_mcp_config(
+        self,
+        state: ConversationState,
+    ) -> Path | None:
+        provider = self._resolved_provider()
+        if provider is None or provider.key != "copilot-cli":
+            return None
+        directory = self._acp_file_secret_dir(state, provider.key)
+        path = directory / "additional-mcp-config.json"
+        oauth_seed_dir = get_acp_oauth_seed_dir(str(state.id))
+        oauth_seed_paths: dict[str, Path] = {}
+        oauth_seed_payloads: dict[Path, str] = {}
+        for name, server in self.mcp_config.items():
+            if (
+                not server.enabled
+                or server.url is None
+                or not isinstance(server.auth, MCPOAuthAuthCredential)
+            ):
+                continue
+            identity = hashlib.sha256(f"{name}\0{server.url}".encode()).hexdigest()[:24]
+            seed_path = oauth_seed_dir / f"{identity}.json"
+            oauth_seed_paths[name] = seed_path
+            seed_server = server.with_decrypted_secrets(cipher=state._cipher)
+            seed_server_payload = seed_server.model_dump(
+                mode="json",
+                context=client_context("plaintext"),
+                exclude_none=True,
+            )
+            seed_auth = server.oauth_auth
+            if seed_auth is not None:
+                auth_payload = seed_server_payload["auth"]
+                assert isinstance(auth_payload, dict)
+                if seed_auth.state is not None:
+                    auth_payload["state"] = seed_auth.state.to_plain_dict(
+                        cipher=state._cipher
+                    )
+                decrypted_auth = seed_server.oauth_auth
+                assert decrypted_auth is not None
+                authentication = decrypted_auth.authentication
+                if (
+                    authentication is not None
+                    and authentication.client_secret is not None
+                ):
+                    authentication_payload = auth_payload["authentication"]
+                    assert isinstance(authentication_payload, dict)
+                    authentication_payload["client_secret"] = (
+                        authentication.client_secret.get_secret_value()
+                    )
+            oauth_seed_payloads[seed_path] = json.dumps(
+                {
+                    "name": name,
+                    "server": seed_server_payload,
+                },
+                separators=(",", ":"),
+            )
+        servers = _mcp_config_to_acp_servers(
+            self.mcp_config,
+            None,
+            bridge_oauth=True,
+            oauth_seed_paths=oauth_seed_paths,
+        )
+        mcp_servers = _stdio_mcp_servers_to_copilot_config(servers, self.mcp_config)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        directory.parent.chmod(0o700)
+        if oauth_seed_payloads or oauth_seed_dir.exists():
+            if oauth_seed_payloads:
+                oauth_seed_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                oauth_seed_dir.chmod(0o700)
+                for seed_path, payload in oauth_seed_payloads.items():
+                    write_secret_file(seed_path, payload)
+            for stale_path in oauth_seed_dir.iterdir():
+                if stale_path.is_file() and stale_path not in oauth_seed_payloads:
+                    stale_path.unlink()
+            if not oauth_seed_payloads:
+                oauth_seed_dir.rmdir()
+        self._oauth_bridge_seed_paths = set(oauth_seed_payloads)
+        if not mcp_servers:
+            path.unlink(missing_ok=True)
+            return None
+        write_secret_file(
+            path,
+            json.dumps({"mcpServers": mcp_servers}, separators=(",", ":")),
+        )
+        return path
 
     async def _warm_npx_cache(
         self,
@@ -2757,7 +2965,7 @@ class ACPAgent(AgentBase):
         )
         package_args = [arg for package in packages for arg in ("--package", package)]
         process = await asyncio.create_subprocess_exec(
-            "npx",
+            _resolve_subprocess_executable("npx"),
             "--yes",
             "--prefer-offline",
             *package_args,
@@ -2826,7 +3034,7 @@ class ACPAgent(AgentBase):
         (the auth-conflict strip is keyed on ``CLAUDE_CODE_OAUTH_TOKEN``, not on
         the config dir), so the data-dir var it sets never affects auth.
         """
-        provider = detect_acp_provider_by_command(self.acp_command)
+        provider = self._resolved_provider()
         if provider is None or provider.data_dir_env_var is None:
             return
         env_var = provider.data_dir_env_var
@@ -3170,26 +3378,39 @@ class ACPAgent(AgentBase):
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
+        copilot_mcp_config = self._materialize_copilot_stdio_mcp_config(state)
+        if copilot_mcp_config is not None:
+            args.extend(
+                [
+                    "--additional-mcp-config",
+                    f"@{copilot_mcp_config}",
+                ]
+            )
         # Codex ignores OPENAI_BASE_URL; translate it into the config key read by
         # the adapter. The helper returns a child-only environment and never
         # mutates the fully assembled mapping above.
         env = _with_codex_base_url(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
-        provider = detect_acp_provider_by_command(self.acp_command)
+        launch_provider = self._resolved_provider()
         packages = _npx_packages(self.acp_command)
-        if provider is not None and packages:
+        if launch_provider is not None and packages:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
             try:
                 self._executor.run_async(
-                    self._warm_npx_cache(packages, provider.key, env, working_dir),
+                    self._warm_npx_cache(
+                        packages,
+                        launch_provider.key,
+                        env,
+                        working_dir,
+                    ),
                     timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
                 )
             except Exception as error:
                 logger.warning(
                     "ACP provider npx cache warm failed: provider=%s; "
                     "continuing with normal startup: %s",
-                    provider.key,
+                    launch_provider.key,
                     error,
                 )
 
@@ -3258,7 +3479,7 @@ class ACPAgent(AgentBase):
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
             process = await asyncio.create_subprocess_exec(
-                command,
+                _resolve_subprocess_executable(command),
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -3333,7 +3554,27 @@ class ACPAgent(AgentBase):
                 session_caps is not None
                 and session_caps.additional_directories is not None
             )
-            acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
+            is_copilot = (
+                launch_provider is not None and launch_provider.key == "copilot-cli"
+            )
+            session_mcp_config = self.mcp_config
+            if is_copilot:
+                session_mcp_config = {
+                    name: server
+                    for name, server in self.mcp_config.items()
+                    if server.command is None
+                    and not isinstance(
+                        server.auth,
+                        (
+                            MCPOAuthAuthCredential,
+                            MCPAzureWorkloadIdentityAuthCredential,
+                        ),
+                    )
+                }
+            acp_mcp_servers = _mcp_config_to_acp_servers(
+                session_mcp_config,
+                mcp_caps,
+            )
             if acp_mcp_servers:
                 logger.info(
                     "Forwarding %d MCP server(s) to ACP session: %s",
@@ -4991,6 +5232,17 @@ class ACPAgent(AgentBase):
             with self._file_credential_lock:
                 if not credential_failures:
                     self._file_credential_bindings = {}
+
+        seed_dirs: set[Path] = set()
+        for seed_path in self._oauth_bridge_seed_paths:
+            seed_dirs.add(seed_path.parent)
+            seed_path.unlink(missing_ok=True)
+        self._oauth_bridge_seed_paths = set()
+        for seed_dir in seed_dirs:
+            with contextlib.suppress(OSError):
+                seed_dir.rmdir()
+            with contextlib.suppress(OSError):
+                seed_dir.parent.rmdir()
 
         if self._executor is not None and not credential_failures:
             try:

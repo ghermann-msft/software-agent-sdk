@@ -12,10 +12,12 @@ from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
     CLAUDE_AGENT_ACP_VERSION,
     CODEX_ACP_VERSION,
+    COPILOT_CLI_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
     GEMINI_CLI_VERSION,
     PI_ACP_VERSION,
     PI_CODING_AGENT_VERSION,
+    WINDOWS_PREINSTALLED_ACP_PROVIDERS,
     ACPInstallSpec,
     ACPPackagePin,
     _main,
@@ -141,6 +143,7 @@ class TestACPInstallCatalogMatchesACPProviders:
         assert CLAUDE_AGENT_ACP_VERSION == "0.99.1"
         assert CODEX_ACP_VERSION == "2.2.2"
         assert GEMINI_CLI_VERSION == "0.46.0"
+        assert COPILOT_CLI_VERSION.count(".") == 2
 
 
 class TestDefaultPreinstalledACPProviders:
@@ -149,11 +152,16 @@ class TestDefaultPreinstalledACPProviders:
             "claude-code",
             "codex",
             "gemini-cli",
+            "copilot-cli",
         )
 
     def test_every_default_provider_is_in_the_catalog(self):
         for key in DEFAULT_PREINSTALLED_ACP_PROVIDERS:
             assert key in ACP_INSTALL_CATALOG
+
+
+def test_windows_image_preinstalls_every_catalog_provider():
+    assert WINDOWS_PREINSTALLED_ACP_PROVIDERS == tuple(ACP_INSTALL_CATALOG)
 
 
 class TestRenderDockerInstallPlan:
@@ -165,8 +173,9 @@ class TestRenderDockerInstallPlan:
             f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
             f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION}",
             f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+            f"@github/copilot@{COPILOT_CLI_VERSION}",
         ]
-        assert wrapper_bins == ["claude-agent-acp", "codex-acp", "gemini"]
+        assert wrapper_bins == ["claude-agent-acp", "codex-acp", "gemini", "copilot"]
 
     def test_empty_selection_installs_nothing(self):
         assert render_docker_install_plan([]) == ([], [])
@@ -220,6 +229,17 @@ class TestACPInstallCatalogCLI:
         out = capsys.readouterr().out
         assert out.splitlines() == ['PACKAGES=""', 'WRAPPER_BINS=""']
 
+    def test_prints_json_plan_for_windows_image(self, capsys):
+        code = _main(["--format", "json", "codex,pi"])
+        assert code == 0
+        assert capsys.readouterr().out == (
+            '{"packages": ["@agentclientprotocol/codex-acp@'
+            f'{CODEX_ACP_VERSION}", "pi-acp@{PI_ACP_VERSION}", '
+            '"@earendil-works/pi-coding-agent@'
+            f'{PI_CODING_AGENT_VERSION}"], '
+            '"wrapper_bins": ["codex-acp", "pi-acp"]}\n'
+        )
+
     def test_unknown_provider_fails_clearly(self, capsys):
         code = _main(["bogus"])
         assert code == 1
@@ -252,7 +272,12 @@ class TestACPInstallCatalogCLI:
         the Dockerfile's `PLAN=$(...) || exit 1; eval "$PLAN"`.
         """
         plan = subprocess.run(
-            [sys.executable, "-S", CATALOG_PY, "claude-code,codex,gemini-cli"],
+            [
+                sys.executable,
+                "-S",
+                CATALOG_PY,
+                "claude-code,codex,gemini-cli,copilot-cli",
+            ],
             capture_output=True,
             text=True,
         ).stdout
@@ -266,6 +291,7 @@ class TestACPInstallCatalogCLI:
         assert result.stdout.splitlines() == [
             f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION} "
             f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION} "
-            f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
-            "claude-agent-acp codex-acp gemini",
+            f"@google/gemini-cli@{GEMINI_CLI_VERSION} "
+            f"@github/copilot@{COPILOT_CLI_VERSION}",
+            "claude-agent-acp codex-acp gemini copilot",
         ]

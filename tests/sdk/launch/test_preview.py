@@ -1,13 +1,46 @@
 from pydantic import SecretStr
 
 from openhands.sdk.launch import LaunchRuntime, preview_launch
+from openhands.sdk.profiles import resolve_agent_profile_dry_run
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
-from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from tests.sdk.launch import fakes
 
 
 CATALOG = [Skill(name="alpha", content="a"), Skill(name="beta", content="b")]
+
+
+def test_profiles_public_dry_run_resolves_an_openhands_profile():
+    stores = fakes.stores(skills=CATALOG)
+
+    report = resolve_agent_profile_dry_run(
+        OpenHandsAgentProfile(name="p", llm_profile_ref="default"),
+        llm_store=stores.llm_profiles,
+        mcp_config=dict(stores.mcp_config),
+        available_skills=CATALOG,
+    )
+
+    assert report.valid is True
+    assert report.agent_kind == "openhands"
+    assert report.resolved_skills == ["alpha", "beta"]
+    assert report.resolved_settings is not None
+
+
+def test_profiles_public_dry_run_resolves_a_copilot_cli_profile():
+    stores = fakes.stores()
+
+    report = resolve_agent_profile_dry_run(
+        ACPAgentProfile(name="copilot", acp_server="copilot-cli"),
+        llm_store=stores.llm_profiles,
+        mcp_config=dict(stores.mcp_config),
+        available_skills=None,
+    )
+
+    assert report.valid is True
+    assert report.resolved_settings is not None
+    settings = ACPAgentSettings.model_validate(report.resolved_settings)
+    assert settings.acp_server == "copilot-cli"
 
 
 def test_a_dangling_mcp_ref_still_reports_the_llm_and_skills():

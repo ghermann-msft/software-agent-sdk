@@ -186,6 +186,30 @@ class TestACPProviderInfo:
         # credential file to materialise.
         assert info.file_secrets == ()
 
+    def test_copilot_cli_metadata(self):
+        info = ACP_PROVIDERS["copilot-cli"]
+        assert info.key == "copilot-cli"
+        assert info.display_name == "GitHub Copilot CLI"
+        assert "@github/copilot@" in info.default_command[3]
+        assert info.default_command[-3:] == (
+            "--acp",
+            "--stdio",
+            "--no-auto-update",
+        )
+        assert info.api_key_env_var == "COPILOT_GITHUB_TOKEN"
+        assert info.base_url_env_var is None
+        assert (
+            info.default_session_mode
+            == "https://agentclientprotocol.com/protocol/session-modes#agent"
+        )
+        assert info.agent_name_patterns == ("copilot",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.effort_config_id == "reasoning_effort"
+        assert info.binary_name == "copilot"
+        assert info.data_dir_env_var == "COPILOT_HOME"
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):
@@ -232,6 +256,7 @@ class TestDetectACPProviderByAgentName:
             pytest.param("Kimi Code CLI", "kimi-code", id="kimi_code"),
             # ``opencode acp`` reports agentInfo.name "OpenCode".
             pytest.param("OpenCode", "opencode", id="opencode"),
+            pytest.param("Copilot", "copilot-cli", id="copilot_cli"),
         ],
     )
     def test_detects_provider_by_agent_name(self, agent_name, expected_key):

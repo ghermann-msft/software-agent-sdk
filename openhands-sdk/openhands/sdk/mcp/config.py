@@ -6,6 +6,7 @@ import base64
 import copy
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, cast
+from urllib.parse import urlparse
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
@@ -36,8 +37,15 @@ from openhands.sdk.utils.pydantic_secrets import (
 
 logger = get_logger(__name__)
 
+AZURE_AI_SCOPE = "https://ai.azure.com/.default"
+
 
 _MCP_SECRET = SecretField(redact_as_text=True, serialized_as=str | None)
+_MCP_OAUTH_SECRET = SecretField(
+    undecryptable="keep",
+    redact_as_text=True,
+    serialized_as=str | None,
+)
 _MCP_SECRET_MAP = SecretField(
     redact_as_text=True, serialized_as=dict[str, str | None] | None
 )
@@ -152,17 +160,25 @@ class MCPHeaderAuthCredential(_MCPBaseModel):
         return {name: value.get_secret_value() for name, value in self.headers.items()}
 
 
+class MCPAzureWorkloadIdentityAuthCredential(_MCPBaseModel):
+    strategy: Literal["azure_workload_identity"]
+    scope: str = Field(default=AZURE_AI_SCOPE, min_length=1)
+
+    def to_http_headers(self) -> dict[str, str] | None:
+        return None
+
+
 class MCPOAuthTokenState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
-    access_token: Annotated[SecretStr | None, _MCP_SECRET] = None
-    refresh_token: Annotated[SecretStr | None, _MCP_SECRET] = None
+    access_token: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
+    refresh_token: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
 
 
 class MCPOAuthClientInfoState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
-    client_secret: Annotated[SecretStr | None, _MCP_SECRET] = None
+    client_secret: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
 
 
 class MCPOAuthTokenExpiryState(_MCPBaseModel):
@@ -186,7 +202,7 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     client_name: str | None = None
     client_metadata_url: str | None = None
     client_id: str | None = None
-    client_secret: Annotated[SecretStr | None, _MCP_SECRET] = None
+    client_secret: Annotated[SecretStr | None, _MCP_OAUTH_SECRET] = None
     additional_client_metadata: dict[str, Any] | None = None
 
 
@@ -332,7 +348,7 @@ class MCPOAuthState(_MCPBaseModel):
             return self._to_storage_dict(context=client_context("plaintext"))
         decrypted = type(self).model_validate(
             self._to_storage_dict(context=client_context("plaintext")),
-            context=cipher_context(cipher),
+            context=cipher_context(cipher, strict=True),
         )
         return decrypted._to_storage_dict(context=client_context("plaintext"))
 
@@ -368,6 +384,7 @@ MCPAuthCredential = Annotated[
     | MCPBearerAuthCredential
     | MCPBasicAuthCredential
     | MCPHeaderAuthCredential
+    | MCPAzureWorkloadIdentityAuthCredential
     | MCPOAuthAuthCredential,
     Field(discriminator="strategy"),
 ]
@@ -418,6 +435,15 @@ class MCPServer(_MCPBaseModel):
             raise ValueError("remote MCP servers require 'url'")
         if not self.command and not self.url:
             raise ValueError("MCP servers require 'command' or 'url'")
+        if isinstance(self.auth, MCPAzureWorkloadIdentityAuthCredential):
+            if declared_transport not in {None, "http", "streamable-http"}:
+                raise ValueError(
+                    "Azure workload identity auth requires a Streamable HTTP MCP server"
+                )
+            if self.url is None or urlparse(self.url).scheme.lower() != "https":
+                raise ValueError(
+                    "Azure workload identity auth requires an HTTPS MCP server URL"
+                )
         if self.auth is not None and self.headers is not None:
             has_authorization_header = any(
                 key.lower() == "authorization" for key in self.headers
@@ -471,7 +497,10 @@ class MCPServer(_MCPBaseModel):
             exclude_none=True,
             exclude_defaults=True,
         )
-        return type(self).model_validate(data, context=cipher_context(cipher))
+        return type(self).model_validate(
+            data,
+            context=cipher_context(cipher, strict=True),
+        )
 
 
 _MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(

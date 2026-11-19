@@ -19,7 +19,7 @@ ARG ENABLE_VERTEX=0
 # acp-providers stage below. The default reproduces the full provider set
 # shipped today (DEFAULT_PREINSTALLED_ACP_PROVIDERS); an unknown key fails the
 # build rather than silently installing nothing.
-ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli,copilot-cli
 # Comma-separated capability keys to include in the `base-image` stage below
 # (`base-image-minimal` is unaffected). The default reproduces today's full
 # contents; an unknown key fails the build. The GitHub CLI is expected to
@@ -319,6 +319,15 @@ RUN set -eux; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
+    if printf '%s\n' $WRAPPER_BINS | grep -qx copilot; then \
+      test -f "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md"; \
+      mkdir -p "$ACP_NODE_DIR/licenses"; \
+      cp "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md" \
+        "$ACP_NODE_DIR/licenses/GitHub-Copilot-CLI-LICENSE.md"; \
+      PATH="$ACP_NODE_DIR/bin:$PATH" \
+        "$ACP_NODE_DIR/bin/copilot" --no-auto-update help acp \
+        | grep -F 'talks to it over stdio'; \
+    fi; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
       # a wrong binary_name is otherwise invisible until someone launches the
@@ -407,8 +416,13 @@ RUN set -eux; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
-    mkdir -p /workspace/project; \
-    chown -R "${USERNAME}:${USERNAME}" /workspace
+    mkdir -p \
+        /openhands/bash_events \
+        /openhands/conversations \
+        /openhands/persistence \
+        /workspace/project \
+        /workspace/worktrees; \
+    chown -R "${USERNAME}:${USERNAME}" /openhands /workspace
 
 # Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
 # The payload itself (Node.js 24 + the ACP npm packages, under $ACP_NODE_DIR) is
@@ -455,6 +469,13 @@ ENV LOG_JSON=true
 # The ACP CLIs run without the user's host home here, so OpenHands supplies the
 # managed skill catalog they cannot read for themselves (#4019).
 ENV OH_ACP_SKILL_SOURCING=openhands_managed
+ENV OH_BASH_EVENTS_DIR=/openhands/bash_events
+ENV OH_CONVERSATIONS_PATH=/openhands/conversations
+ENV OH_CONVERSATION_WORKTREE_ROOT=/workspace/worktrees
+ENV OH_PERSISTENCE_DIR=/openhands/persistence
+ENV OH_RUNTIME_DURABLE_STATE_PATH=/openhands
+ENV OH_RUNTIME_WORKSPACE_MOUNT_PATH=/workspace
+ENV OH_WORKSPACE_PATH=/workspace/project
 EXPOSE ${PORT}
 
 ####################################################################################

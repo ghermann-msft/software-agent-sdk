@@ -20,6 +20,7 @@ bump only needs to happen here.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -106,6 +107,7 @@ CLAUDE_AGENT_ACP_VERSION = "0.99.1"
 CODEX_ACP_VERSION = "2.2.2"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"
+COPILOT_CLI_VERSION = "1.0.109"
 
 # Pi is the one provider with two independent pins: pi-acp only adapts ACP and
 # spawns a separately installed `pi` engine off PATH.
@@ -176,6 +178,15 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         # No `engines` field on opencode-ai or its platform packages: the CLI
         # is a compiled Bun binary and only its postinstall runs on Node.
     ),
+    "copilot-cli": ACPInstallSpec(
+        key="copilot-cli",
+        packages=(ACPPackagePin("@github/copilot", COPILOT_CLI_VERSION),),
+        binary_name="copilot",
+        # ACP is a top-level flag, not a subcommand. Disable the executable's
+        # updater so the image always runs the reviewed package version.
+        trailing_args=("--acp", "--stdio", "--no-auto-update"),
+        min_node_version="22.0.0",
+    ),
 }
 """Every ACP provider installable via npm. Registry membership only makes a
 provider *selectable* (``INSTALL_ACP_PROVIDERS``) — see
@@ -187,12 +198,22 @@ DEFAULT_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = (
     "claude-code",
     "codex",
     "gemini-cli",
+    "copilot-cli",
 )
 """Provider keys baked into the default agent-server image
 (``INSTALL_ACP_PROVIDERS`` default). Kept separate from
 :data:`ACP_INSTALL_CATALOG` so registering a new npm provider there does not,
 by itself, grow every published image — joining this default is a separate,
 deliberate decision per provider (see OpenHands/software-agent-sdk#4820)."""
+
+WINDOWS_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = tuple(ACP_INSTALL_CATALOG)
+"""Every built-in ACP provider ships in the native Windows Agent Server image.
+
+Unlike the configurable Linux base image, the native Windows runtime is a
+single curated image. Keeping this tuple derived from the catalog makes a new
+built-in provider fail the Windows image contract until its exact package pin
+is included in the immutable image payload.
+"""
 
 
 def render_docker_install_plan(
@@ -238,6 +259,12 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "providers", help="Comma-separated ACP provider keys, or '' for none."
     )
+    parser.add_argument(
+        "--format",
+        choices=("shell", "json"),
+        default="shell",
+        help="Output format for the generated install plan.",
+    )
     args = parser.parse_args(argv)
     keys = [k for k in (p.strip() for p in args.providers.split(",")) if k]
     try:
@@ -245,8 +272,11 @@ def _main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(f'PACKAGES="{" ".join(packages)}"')
-    print(f'WRAPPER_BINS="{" ".join(wrapper_bins)}"')
+    if args.format == "json":
+        print(json.dumps({"packages": packages, "wrapper_bins": wrapper_bins}))
+    else:
+        print(f'PACKAGES="{" ".join(packages)}"')
+        print(f'WRAPPER_BINS="{" ".join(wrapper_bins)}"')
     return 0
 
 

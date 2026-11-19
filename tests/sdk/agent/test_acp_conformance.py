@@ -138,6 +138,15 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ):
         monkeypatch.setenv(var, _BOGUS_KEY)
     monkeypatch.setenv("KIMI_MODEL_NAME", "kimi-k2.7-code")
+    # Copilot CLI validates GitHub credentials during session/new, unlike the
+    # other providers. Its documented BYOK path avoids GitHub login entirely;
+    # no request reaches this deliberately closed endpoint because the probe
+    # never sends a prompt.
+    monkeypatch.setenv("COPILOT_PROVIDER_BASE_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", _BOGUS_KEY)
+    monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "gpt-4o")
+    monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-4o")
+    monkeypatch.setenv("COPILOT_MODEL", "gpt-4o")
     for var in (
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
@@ -156,6 +165,11 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # Carries an entire opencode auth store by value, so an ambient one
         # would smuggle host credentials into a credential-free probe.
         "OPENCODE_AUTH_CONTENT",
+        "COPILOT_GITHUB_TOKEN",
+        "COPILOT_HOME",
+        "COPILOT_PROVIDERS_CONFIG",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
     ):
         monkeypatch.delenv(var, raising=False)
 

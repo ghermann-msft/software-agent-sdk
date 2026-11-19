@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import threading
 import time
 import uuid
@@ -46,6 +47,7 @@ from openhands.sdk.agent.acp_agent import (
     _OpenHandsACPBridge,
     _preconfigured_credentials,
     _reapply_session_model_on_resume,
+    _resolve_subprocess_executable,
     _select_auth_method,
     _serialize_tool_content,
     _split_effort_suffix,
@@ -81,17 +83,22 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
-from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_install_catalog import (
     ACPInstallSpec,
     ACPPackagePin,
 )
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+from openhands.sdk.settings.model import ACPAgentSettings, validate_agent_settings
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from openhands.sdk.utils.pydantic_secrets import (
+    REDACTED_SECRET_VALUE,
+    cipher_context,
+    client_context,
+)
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -165,13 +172,14 @@ def test_file_credential_flush_does_not_hold_agent_lock(tmp_path):
     assert failures == {}
 
 
-def _make_state(tmp_path) -> ConversationState:
+def _make_state(tmp_path, *, cipher: Cipher | None = None) -> ConversationState:
     agent = _make_agent()
     workspace = LocalWorkspace(working_dir=str(tmp_path))
     return ConversationState.create(
         id=uuid.uuid4(),
         agent=agent,
         workspace=workspace,
+        cipher=cipher,
     )
 
 
@@ -220,12 +228,40 @@ def test_npx_packages_prefers_pinned_package_flags():
     ]
 
 
-def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
+def test_acp_npm_cache_is_shared_across_conversations(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENHANDS_ACP_NPM_CACHE_DIR", raising=False)
     agent = _make_agent()
     state = _make_state(tmp_path)
     state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
 
     assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+def test_acp_npm_cache_uses_absolute_override(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "ssd" / ".openhands" / "npm-cache"
+    monkeypatch.setenv("OPENHANDS_ACP_NPM_CACHE_DIR", str(cache_dir))
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    state.persistence_dir = str(tmp_path / "azure-files" / "conversation-id")
+
+    assert agent._acp_npm_cache_dir(state) == cache_dir
+    assert cache_dir.is_dir()
+    if os.name == "nt":
+        assert cache_dir.drive
+    else:
+        assert cache_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_acp_npm_cache_rejects_relative_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENHANDS_ACP_NPM_CACHE_DIR", "relative/npm-cache")
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="OPENHANDS_ACP_NPM_CACHE_DIR must be an absolute path",
+    ):
+        agent._acp_npm_cache_dir(state)
 
 
 async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):
@@ -362,6 +398,16 @@ class TestACPAgentInstantiation:
             "PATH": "/usr/bin",
             "USER_VALUE": "kept",
         }
+
+    def test_resolves_windows_npx_cmd_before_asyncio_spawn(self, monkeypatch):
+        monkeypatch.setattr(acp_agent_module, "_WINDOWS", True)
+        monkeypatch.setattr(
+            acp_agent_module.shutil,
+            "which",
+            lambda command: r"C:\Node\npx.cmd" if command == "npx" else None,
+        )
+
+        assert _resolve_subprocess_executable("npx") == r"C:\Node\npx.cmd"
 
     def test_requires_acp_command(self):
         with pytest.raises(Exception):
@@ -6462,7 +6508,7 @@ class TestACPSessionIdPersistence:
     """
 
     @staticmethod
-    def _transport_patches(conn):
+    def _transport_patches(conn, spawn_calls=None):
         """Context manager stacking the transport-layer mocks that let
         _start_acp_server run without spawning a real subprocess.
         """
@@ -6475,7 +6521,9 @@ class TestACPSessionIdPersistence:
         mock_process.stdout = MagicMock()
         mock_process.stderr = MagicMock()
 
-        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        async def _fake_create_subprocess_exec(*args, **kwargs):
+            if spawn_calls is not None:
+                spawn_calls.append((args, kwargs))
             return mock_process
 
         async def _fake_filter(_src, _dst):
@@ -6509,12 +6557,12 @@ class TestACPSessionIdPersistence:
         return stack
 
     @staticmethod
-    def _patched_start_acp_server(agent, state, *, conn):
+    def _patched_start_acp_server(agent, state, *, conn, spawn_calls=None):
         """Invoke the real _start_acp_server with ACP transport layers mocked."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent._executor = AsyncExecutor()
-        with TestACPSessionIdPersistence._transport_patches(conn):
+        with TestACPSessionIdPersistence._transport_patches(conn, spawn_calls):
             agent._start_acp_server(state)
 
     @staticmethod
@@ -8941,6 +8989,81 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer oauth-access-token")
         ]
 
+    def test_copilot_oauth_uses_local_refreshing_bridge(self, tmp_path):
+        secret = "oauth-access-token"
+        seed_path = tmp_path / "oauth-seed.json"
+        cfg = self._config(
+            {
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": secret}},
+                    },
+                }
+            }
+        )
+
+        out = _mcp_config_to_acp_servers(
+            cfg,
+            self._caps(http=True, sse=False),
+            bridge_oauth=True,
+            oauth_seed_paths={"atlassian-rovo": seed_path},
+        )
+
+        assert len(out) == 1
+        server = out[0]
+        assert server.name == "atlassian-rovo"
+        assert server.command == acp_agent_module.sys.executable
+        assert "--mcp-oauth-bridge" in server.args
+        assert server.args[-2:] == ["--mcp-oauth-bridge-seed", str(seed_path)]
+        assert [(item.name, item.value) for item in server.env] == [
+            ("OPENHANDS_SUPPRESS_BANNER", "1")
+        ]
+        payload = server.model_dump_json()
+        assert secret not in payload
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
+
+    @pytest.mark.parametrize(
+        "executable",
+        [
+            "/usr/local/bin/openhands-agent-server",
+            r"C:\AgentServer\openhands-agent-server.exe",
+        ],
+    )
+    def test_oauth_bridge_uses_packaged_agent_server_executable(
+        self, tmp_path, executable
+    ):
+        seed_path = tmp_path / "oauth-seed.json"
+        cfg = self._config(
+            {
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        )
+
+        with patch.object(
+            acp_agent_module.sys,
+            "executable",
+            executable,
+        ):
+            out = _mcp_config_to_acp_servers(
+                cfg,
+                self._caps(http=True, sse=False),
+                bridge_oauth=True,
+                oauth_seed_paths={"atlassian-rovo": seed_path},
+            )
+
+        assert out[0].command == executable
+        assert out[0].args == [
+            "--mcp-oauth-bridge",
+            "--mcp-oauth-bridge-seed",
+            str(seed_path),
+        ]
+
     def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
         from openhands.sdk.mcp.config import MCPServer
 
@@ -9046,6 +9169,27 @@ class TestMcpConfigToAcpServers:
             ("authorization", "Bearer explicit")
         ]
 
+    def test_azure_workload_identity_is_not_forwarded_as_static_auth(self):
+        from acp.schema import McpServerStdio
+
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        }
+
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+
+        assert isinstance(out[0], McpServerStdio)
+        payload = out[0].model_dump_json()
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
+
     def test_sse_gated_on_capability(self):
         from acp.schema import SseMcpServer
 
@@ -9076,6 +9220,79 @@ class TestMcpConfigToAcpServers:
         )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
+
+    def test_azure_workload_identity_maps_to_local_stdio_bridge(self):
+        from acp.schema import McpServerStdio
+
+        cfg = {
+            "mcpServers": {
+                "foundry-web-search": {
+                    "url": "https://foundry.example.com/mcp",
+                    "transport": "streamable-http",
+                    "auth": {
+                        "strategy": "azure_workload_identity",
+                        "scope": "api://foundry/.default",
+                    },
+                }
+            }
+        }
+
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=False, sse=False)
+        )
+
+        assert len(out) == 1
+        server = out[0]
+        assert isinstance(server, McpServerStdio)
+        assert server.name == "foundry-web-search"
+        assert server.command == acp_agent_module.sys.executable
+        assert server.args == [
+            "-m",
+            "openhands.sdk.mcp.azure_stdio_bridge",
+            "--url",
+            "https://foundry.example.com/mcp",
+            "--scope",
+            "api://foundry/.default",
+        ]
+        assert [(item.name, item.value) for item in server.env] == [
+            ("OPENHANDS_SUPPRESS_BANNER", "1")
+        ]
+        payload = server.model_dump_json()
+        assert "Authorization" not in payload
+        assert "Bearer" not in payload
+
+    @pytest.mark.parametrize(
+        "executable",
+        [
+            "/usr/local/bin/openhands-agent-server",
+            r"C:\AgentServer\openhands-agent-server.exe",
+        ],
+    )
+    def test_azure_bridge_uses_packaged_agent_server_executable(self, executable):
+        cfg = self._config(
+            {
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        )
+
+        with patch.object(
+            acp_agent_module.sys,
+            "executable",
+            executable,
+        ):
+            out = _mcp_config_to_acp_servers(
+                cfg,
+                self._caps(http=False, sse=False),
+            )
+
+        assert out[0].command == executable
+        assert out[0].args[:2] == [
+            "--mcp-azure-workload-identity-bridge",
+            "--mcp-azure-bridge-url",
+        ]
 
     def test_disabled_servers_not_forwarded(self):
         cfg = {
@@ -9146,6 +9363,25 @@ class TestACPMcpForwarding:
         assert [s.name for s in servers] == ["fetch"]
         conn.new_session.assert_not_awaited()
 
+    def test_resume_recreates_azure_workload_identity_bridge(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {"strategy": "azure_workload_identity"},
+                }
+            }
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        conn = self._conn_with_caps(http=False, sse=False)
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        servers = conn.load_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["foundry"]
+        assert servers[0].command == acp_agent_module.sys.executable
+
     def test_no_mcp_config_forwards_empty_acp_mcp_servers_list(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
@@ -9155,6 +9391,275 @@ class TestACPMcpForwarding:
 
         conn.new_session.assert_awaited_once()
         assert conn.new_session.call_args.kwargs["mcp_servers"] == []
+
+    def test_copilot_stdio_servers_use_private_startup_config(self, tmp_path, caplog):
+        secret = "perforce-password-do-not-log"
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={
+                "perforce": {
+                    "command": "p4-mcp-server",
+                    "args": ["--stdio"],
+                    "env": {
+                        "P4PORT": "ssl:p4.example.com:1666",
+                        "P4PASSWD": secret,
+                    },
+                },
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {
+                        "strategy": "azure_workload_identity",
+                        "scope": "api://foundry/.default",
+                    },
+                },
+                "atlassian": {"url": "https://atlassian.example.com/mcp"},
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {
+                                "access_token": "atlassian-access-do-not-log",
+                                "refresh_token": "atlassian-refresh-do-not-log",
+                            }
+                        },
+                    },
+                },
+            },
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+        spawn_calls = []
+
+        with caplog.at_level("DEBUG"):
+            TestACPSessionIdPersistence._patched_start_acp_server(
+                agent,
+                state,
+                conn=conn,
+                spawn_calls=spawn_calls,
+            )
+
+        process_args, _ = spawn_calls[0]
+        option_index = process_args.index("--additional-mcp-config")
+        config_reference = process_args[option_index + 1]
+        assert config_reference.startswith("@")
+        config_path = Path(config_reference[1:])
+        config = json.loads(config_path.read_text())
+        assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == secret
+        assert config["mcpServers"]["foundry"]["env"] == {
+            "OPENHANDS_SUPPRESS_BANNER": "1"
+        }
+        oauth_bridge = config["mcpServers"]["atlassian-rovo"]
+        assert "--mcp-oauth-bridge" in oauth_bridge["args"]
+        assert oauth_bridge["env"] == {"OPENHANDS_SUPPRESS_BANNER": "1"}
+        seed_path = Path(oauth_bridge["args"][-1])
+        seed = seed_path.read_text()
+        assert seed_path.is_absolute()
+        assert not seed_path.is_relative_to(tmp_path)
+        assert "atlassian-access-do-not-log" in seed
+        assert "atlassian-refresh-do-not-log" in seed
+        if os.name != "nt":
+            assert seed_path.stat().st_mode & 0o777 == 0o600
+        serialized = json.dumps(config)
+        assert "atlassian-access-do-not-log" not in serialized
+        assert "atlassian-refresh-do-not-log" not in serialized
+        if os.name != "nt":
+            assert config_path.stat().st_mode & 0o777 == 0o600
+        assert secret not in " ".join(str(arg) for arg in process_args)
+        assert secret not in caplog.text
+        assert "atlassian-access-do-not-log" not in caplog.text
+        assert "atlassian-refresh-do-not-log" not in caplog.text
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["atlassian"]
+        agent.close()
+        assert not seed_path.exists()
+
+    def test_copilot_resume_recreates_stdio_startup_config(self, tmp_path):
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={
+                "perforce": {
+                    "command": "p4-mcp-server",
+                    "env": {"P4PASSWD": "current-secret"},
+                },
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {
+                                "access_token": "current-access",
+                                "refresh_token": "current-refresh",
+                            }
+                        },
+                    },
+                },
+            },
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert config_path is not None
+        config_path.write_text('{"stale":true}')
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        config = json.loads(config_path.read_text())
+        assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == ("current-secret")
+        assert "--mcp-oauth-bridge" in (config["mcpServers"]["atlassian-rovo"]["args"])
+        seed_path = Path(config["mcpServers"]["atlassian-rovo"]["args"][-1])
+        assert "current-access" in seed_path.read_text()
+        assert "current-refresh" in seed_path.read_text()
+        assert "current-access" not in config_path.read_text()
+        assert "current-refresh" not in config_path.read_text()
+        conn.load_session.assert_awaited_once()
+        assert conn.load_session.call_args.kwargs["mcp_servers"] == []
+        agent.close()
+        assert not seed_path.exists()
+
+    def test_copilot_oauth_bridges_use_distinct_deterministic_seeds(self, tmp_path):
+        server = {
+            "url": "https://mcp.example.com/mcp",
+            "auth": {
+                "strategy": "oauth2",
+                "state": {"tokens": {"access_token": "access-token"}},
+            },
+        }
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={"first": server, "second": server},
+        )
+        state = _make_state(tmp_path)
+
+        first_config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert first_config_path is not None
+        first_config = json.loads(first_config_path.read_text())
+        first_paths = {
+            name: Path(value["args"][-1])
+            for name, value in first_config["mcpServers"].items()
+        }
+
+        second_config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert second_config_path is not None
+        assert second_config_path == first_config_path
+        second_config = json.loads(second_config_path.read_text())
+        second_paths = {
+            name: Path(value["args"][-1])
+            for name, value in second_config["mcpServers"].items()
+        }
+
+        assert first_paths == second_paths
+        assert len(set(first_paths.values())) == 2
+        assert all(path.is_file() for path in first_paths.values())
+        agent.close()
+        assert all(not path.exists() for path in first_paths.values())
+
+    def test_copilot_oauth_seed_decrypts_parent_cipher_before_handoff(
+        self, tmp_path, caplog
+    ):
+        source_cipher = Cipher(secret_key="organization-settings-secret-key")
+        intermediate_cipher = Cipher(secret_key="sandbox-settings-secret-key")
+        plaintext_server = MCPServer.model_validate(
+            {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "client_secret_post",
+                        "client_secret": "oauth-client-secret",
+                    },
+                    "state": {
+                        "tokens": {
+                            "access_token": "oauth-access-token",
+                            "refresh_token": "oauth-refresh-token",
+                        },
+                        "client_info": {
+                            "client_id": "oauth-client-id",
+                            "client_secret": "registered-client-secret",
+                        },
+                    },
+                },
+            }
+        )
+        encrypted_settings = {
+            "agent_kind": "acp",
+            "acp_server": "copilot-cli",
+            "mcp_config": {
+                "atlassian-rovo": plaintext_server.model_dump(
+                    mode="json",
+                    context=client_context("encrypted", source_cipher),
+                )
+            },
+        }
+        parsed_settings = validate_agent_settings(
+            encrypted_settings,
+            context=cipher_context(intermediate_cipher),
+        )
+        assert isinstance(parsed_settings, ACPAgentSettings)
+        agent = parsed_settings.create_agent()
+        state = _make_state(tmp_path, cipher=source_cipher)
+
+        config_path = agent._materialize_copilot_stdio_mcp_config(state)
+
+        assert config_path is not None
+        config = json.loads(config_path.read_text())
+        seed_path = Path(config["mcpServers"]["atlassian-rovo"]["args"][-1])
+        seed = json.loads(seed_path.read_text())
+        auth = seed["server"]["auth"]
+        assert auth["authentication"]["client_secret"] == "oauth-client-secret"
+        assert auth["state"]["tokens"]["access_token"] == "oauth-access-token"
+        assert auth["state"]["tokens"]["refresh_token"] == "oauth-refresh-token"
+        assert (
+            auth["state"]["client_info"]["client_secret"] == "registered-client-secret"
+        )
+        assert "gAAAAA" not in seed_path.read_text()
+        assert "Failed to decrypt secret value" not in caplog.text
+        agent.close()
+
+    def test_non_copilot_provider_keeps_stdio_in_session_payload(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={"perforce": {"command": "p4-mcp-server"}},
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+        spawn_calls = []
+
+        TestACPSessionIdPersistence._patched_start_acp_server(
+            agent,
+            state,
+            conn=conn,
+            spawn_calls=spawn_calls,
+        )
+
+        process_args, _ = spawn_calls[0]
+        assert "--additional-mcp-config" not in process_args
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["perforce"]
+
+    def test_non_copilot_provider_keeps_oauth_remote(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={
+                "atlassian-rovo": {
+                    "url": "https://mcp.atlassian.com/v1/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access"}},
+                    },
+                }
+            },
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["atlassian-rovo"]
+        assert [header.value for header in servers[0].headers] == [
+            "Bearer oauth-access"
+        ]
 
 
 # ---------------------------------------------------------------------------

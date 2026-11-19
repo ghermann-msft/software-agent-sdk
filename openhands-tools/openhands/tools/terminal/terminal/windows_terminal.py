@@ -301,14 +301,15 @@ class WindowsTerminal(TerminalInterface):
 
         process = self.process
         if process is not None:
-            if self._job is not None and process.poll() is None:
-                self._job.terminate()
-            elif process.poll() is None:
+            if process.poll() is None:
                 self._kill_descendants()
-                try:
-                    process.kill()
-                except OSError as exc:
-                    logger.debug("Error killing PowerShell process: %s", exc)
+                if self._job is not None:
+                    self._job.terminate()
+                else:
+                    try:
+                        process.kill()
+                    except OSError as exc:
+                        logger.debug("Error killing PowerShell process: %s", exc)
             try:
                 process.wait(timeout=_PROCESS_EXIT_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
@@ -575,11 +576,9 @@ class WindowsTerminal(TerminalInterface):
         """Terminate every process under the shell except the shell and its conhost."""  # noqa: E501
         if platform.system() != "Windows" or self.process is None:
             return False
-        pids: list[int] | None = None
+        pids = set(windows_console.descendant_pids(self.process.pid))
         if self._job is not None:
-            pids = self._job.pids()
-        if pids is None:
-            pids = windows_console.descendant_pids(self.process.pid)
+            pids.update(self._job.pids() or [])
         victims = [
             pid
             for pid in pids

@@ -22,6 +22,7 @@ from openhands.agent_server.skills_service import (
 )
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import Skill
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_REF, PUBLIC_SKILLS_REPO
 
 
 def _create_test_plugin(plugin_dir: Path, name: str, skill_name: str) -> Path:
@@ -823,6 +824,23 @@ class TestSyncPublicSkills:
 
             assert success is True
             assert "success" in message.lower()
+
+    def test_sync_public_skills_uses_configured_cache_dir(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "ssd" / "skills-cache"
+        monkeypatch.setenv("OPENHANDS_SKILLS_CACHE_DIR", str(cache_dir))
+        with patch(
+            "openhands.agent_server.skills_service.update_skills_repository",
+            return_value=cache_dir / "public-skills",
+        ) as update:
+            success, _ = sync_public_skills()
+
+        assert success is True
+        update.assert_called_once_with(
+            PUBLIC_SKILLS_REPO,
+            PUBLIC_SKILLS_REF,
+            cache_dir,
+            strict=True,
+        )
 
     def test_sync_public_skills_failure(self):
         """Test failed skill sync."""

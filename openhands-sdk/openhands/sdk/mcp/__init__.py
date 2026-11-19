@@ -4,7 +4,9 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
+    AZURE_AI_SCOPE,
     MCPAuthCredential,
+    MCPAzureWorkloadIdentityAuthCredential,
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPOAuthState,
@@ -46,7 +48,9 @@ def __getattr__(name: str):
 
 __all__ = [
     "MCPClient",
+    "AZURE_AI_SCOPE",
     "MCPAuthCredential",
+    "MCPAzureWorkloadIdentityAuthCredential",
     "MCPOAuthAuthCredential",
     "MCPOAuthAuthentication",
     "MCPOAuthState",

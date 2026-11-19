@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -13,14 +16,19 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import uvicorn
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
+from mcp import types as mcp_types
 from mcp.server.auth.provider import RefreshToken
 from mcp.server.auth.settings import ClientRegistrationOptions
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.mcp_oauth_stdio_bridge import (
+    create_oauth_stdio_bridge,
+    run_oauth_stdio_bridge,
+)
 from openhands.agent_server.mcp_oauth_store import (
     MCPSettingsOAuthTokenStore,
     SettingsBackedMCPToolProvider,
@@ -35,6 +43,7 @@ from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_conf
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import create_mcp_tools
+from openhands.sdk.utils.pydantic_secrets import client_context
 
 
 def _settings_store(config: Config) -> FileSettingsStore:
@@ -771,6 +780,26 @@ def _expired_inline_oauth_server(
     )
 
 
+def _write_oauth_bridge_seed(
+    path: Path,
+    name: str,
+    server: MCPServer,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "server": server.model_dump(
+                    mode="json",
+                    context=client_context("plaintext"),
+                    exclude_none=True,
+                ),
+            }
+        )
+    )
+    path.chmod(0o600)
+
+
 def test_settings_backed_provider_keeps_stored_state_when_refresh_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -870,6 +899,211 @@ def test_settings_backed_provider_writes_back_tokens_refreshed_on_connect(
     assert state["tokens"]["refresh_token"] != "issued-refresh-token"
     assert state["client_info"]["client_id"] == "installed-client"
     assert state["token_expires_at"] > time.time()
+
+
+@pytest.mark.asyncio
+async def test_oauth_stdio_bridge_refreshes_at_startup_and_after_401(
+    tmp_path: Path,
+    oauth_provider: InMemoryOAuthProvider,
+    protected_oauth_mcp_server: str,
+    write_backs: list[dict],
+):
+    config = _hosted_config(tmp_path)
+    client_info = _installed_client(oauth_provider)
+    oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
+        token="issued-refresh-token",
+        client_id="installed-client",
+        scopes=["mail.read"],
+    )
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server,
+        client_info,
+        "issued-refresh-token",
+    )
+    store = _settings_store(config)
+    store.save(PersistedSettings())
+    seed_path = tmp_path / "org-injected-oauth.json"
+    _write_oauth_bridge_seed(seed_path, "mail", mcp_config["mail"])
+    bridge = create_oauth_stdio_bridge(config, seed_path)
+
+    async with Client(bridge) as client:
+        tools = await client.list_tools()
+        local_settings = store.load()
+        assert local_settings is not None
+        assert local_settings.agent_settings.mcp_config == {}
+        first_tokens = write_backs[-1]["oauth_state"]["tokens"]
+        first_access = first_tokens["access_token"]
+        first_refresh = first_tokens["refresh_token"]
+        oauth_provider.access_tokens.pop(first_access)
+
+        result = await client.call_tool(
+            "read_subject",
+            {"subject": "rotated during conversation"},
+        )
+
+    assert [tool.name for tool in tools] == ["read_subject"]
+    content = result.content[0]
+    assert isinstance(content, mcp_types.TextContent)
+    assert content.text == "OAuth mail subject: rotated during conversation"
+    second_tokens = write_backs[-1]["oauth_state"]["tokens"]
+    assert second_tokens["access_token"] != first_access
+    assert second_tokens["refresh_token"] != first_refresh
+    local_settings = store.load()
+    assert local_settings is not None
+    assert local_settings.agent_settings.mcp_config == {}
+
+
+def test_oauth_stdio_bridge_rejects_relative_seed_path(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+
+    with pytest.raises(ValueError, match="seed path must be absolute"):
+        create_oauth_stdio_bridge(config, "relative-seed.json")
+
+
+def test_oauth_stdio_bridge_does_not_disclose_invalid_seed(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+    seed_path = tmp_path / "invalid-seed.json"
+    secret = "refresh-token-must-not-appear"
+    seed_path.write_text(f'{{"secret":"{secret}"}}')
+    seed_path.chmod(0o600)
+
+    with pytest.raises(ValueError) as exc_info:
+        create_oauth_stdio_bridge(config, seed_path)
+
+    assert str(exc_info.value) == "OAuth MCP bridge seed file is invalid"
+    assert secret not in str(exc_info.value)
+
+
+def test_oauth_stdio_bridge_starts_clean_stdio_without_banner(
+    capsys: pytest.CaptureFixture[str],
+):
+    bridge_factory = patch(
+        "openhands.agent_server.mcp_oauth_stdio_bridge.create_oauth_stdio_bridge"
+    )
+    anyio_run = patch("openhands.agent_server.mcp_oauth_stdio_bridge.anyio.run")
+    with bridge_factory, anyio_run as run:
+        run_oauth_stdio_bridge(
+            Config(session_api_keys=[]),
+            Path("C:\\workspace\\conversation\\acp\\oauth-seed.json"),
+        )
+
+    run.assert_called_once()
+    assert capsys.readouterr().out == ""
+
+
+def test_oauth_stdio_bridge_negotiates_remote_protocol_independently(
+    tmp_path: Path,
+):
+    config = _hosted_config(tmp_path)
+    seed_path = tmp_path / "oauth-seed.json"
+    _write_oauth_bridge_seed(
+        seed_path,
+        "mail",
+        _inline_oauth_server("access-token")["mail"],
+    )
+
+    with patch(
+        "openhands.agent_server.mcp_oauth_stdio_bridge.create_proxy"
+    ) as create_proxy:
+        create_oauth_stdio_bridge(config, seed_path)
+
+    assert create_proxy.call_args.kwargs["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen", [False, True], ids=["module", "frozen"])
+async def test_oauth_stdio_bridge_accepts_copilot_protocol_version(
+    tmp_path: Path,
+    frozen: bool,
+):
+    seed_path = tmp_path / "oauth-seed.json"
+    server = _inline_oauth_server("access-token")["mail"]
+    _write_oauth_bridge_seed(seed_path, "mail", server)
+    env = os.environ.copy()
+    env["OPENHANDS_SUPPRESS_BANNER"] = "1"
+    env["OH_PERSISTENCE_DIR"] = str(tmp_path / "persistence")
+    if frozen:
+        binary_name = (
+            "openhands-agent-server.exe"
+            if os.name == "nt"
+            else ("openhands-agent-server")
+        )
+        binary = Path(__file__).parents[2] / "dist" / binary_name
+        if not binary.is_file():
+            pytest.skip("frozen agent-server binary is not built")
+        command = [str(binary)]
+    else:
+        command = [sys.executable, "-m", "openhands.agent_server"]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        "--mcp-oauth-bridge",
+        "--mcp-oauth-bridge-seed",
+        str(seed_path),
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    modern_probe = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "ping",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            }
+        },
+    }
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "copilot-cli", "version": "1.0.109"},
+        },
+    }
+    response_timeout = 120 if frozen else 10
+    try:
+        process.stdin.write((json.dumps(modern_probe) + "\n").encode())
+        await process.stdin.drain()
+        probe_response = await asyncio.wait_for(
+            process.stdout.readline(),
+            timeout=response_timeout,
+        )
+        if not probe_response:
+            assert process.stderr is not None
+            stderr = await asyncio.wait_for(
+                process.stderr.read(),
+                timeout=10,
+            )
+            pytest.fail(
+                "OAuth bridge exited before Copilot initialize: "
+                f"{stderr.decode(errors='replace')}"
+            )
+        process.stdin.write((json.dumps(initialize) + "\n").encode())
+        await process.stdin.drain()
+        response = json.loads(
+            await asyncio.wait_for(
+                process.stdout.readline(),
+                timeout=response_timeout,
+            )
+        )
+    finally:
+        process.stdin.close()
+        await process.stdin.wait_closed()
+        if process.returncode is None:
+            process.terminate()
+        await process.communicate()
+
+    assert response["result"]["protocolVersion"] == "2025-11-25"
 
 
 @pytest.mark.parametrize("stored_client", [True, False])

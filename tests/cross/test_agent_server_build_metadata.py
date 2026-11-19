@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
+    COPILOT_CLI_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
 )
 
@@ -21,6 +22,10 @@ AGENT_SERVER_DOCKERFILE = (
     / "agent_server"
     / "docker"
     / "Dockerfile"
+)
+WINDOWS_DOCKERFILE = AGENT_SERVER_DOCKERFILE.with_name("Dockerfile.windows")
+TYPESCRIPT_ACP_REGISTRY = (
+    REPO_ROOT / "clients" / "typescript" / "src" / "models" / "acp-providers.json"
 )
 AGENT_SERVER_SPEC = (
     REPO_ROOT
@@ -61,7 +66,8 @@ def test_server_workflow_contains_install_acp_providers_expression() -> None:
 
     assert (
         "INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' "
-        "&& 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}"
+        "&& 'claude-code,codex,gemini-cli,copilot-cli' || "
+        "inputs.install_acp_providers }}"
     ) in workflow_text
 
 
@@ -95,17 +101,21 @@ def test_and_or_shape_preserves_falsy_last_operand() -> None:
     """
 
     def resolve(is_dispatch: bool, dispatch_value: str) -> str:
-        default = "claude-code,codex,gemini-cli"
+        default = "claude-code,codex,gemini-cli,copilot-cli"
         return (not is_dispatch and default) or dispatch_value
 
     assert (
-        resolve(is_dispatch=False, dispatch_value="") == "claude-code,codex,gemini-cli"
+        resolve(is_dispatch=False, dispatch_value="")
+        == "claude-code,codex,gemini-cli,copilot-cli"
     )
     assert resolve(is_dispatch=True, dispatch_value="") == ""
     assert resolve(is_dispatch=True, dispatch_value="codex") == "codex"
     assert (
-        resolve(is_dispatch=True, dispatch_value="claude-code,codex,gemini-cli")
-        == "claude-code,codex,gemini-cli"
+        resolve(
+            is_dispatch=True,
+            dispatch_value="claude-code,codex,gemini-cli,copilot-cli",
+        )
+        == "claude-code,codex,gemini-cli,copilot-cli"
     )
 
 
@@ -294,6 +304,25 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
             )
 
 
+def test_copilot_cli_pin_matches_linux_windows_and_typescript_surfaces() -> None:
+    spec = ACP_INSTALL_CATALOG["copilot-cli"]
+    assert spec.packages[0].name == "@github/copilot"
+    assert spec.packages[0].version == COPILOT_CLI_VERSION
+    assert spec.trailing_args == ("--acp", "--stdio", "--no-auto-update")
+
+    linux_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    assert "GitHub-Copilot-CLI-LICENSE.md" in linux_text
+    assert '"$ACP_NODE_DIR/bin/copilot" --no-auto-update help acp' in linux_text
+
+    windows_text = WINDOWS_DOCKERFILE.read_text(encoding="utf-8")
+    assert f"ARG COPILOT_CLI_VERSION={COPILOT_CLI_VERSION}" in windows_text
+    assert f"/v{COPILOT_CLI_VERSION}/copilot-win32-x64.zip" in windows_text
+    assert f"/v{COPILOT_CLI_VERSION}/LICENSE.md" in windows_text
+
+    typescript_text = TYPESCRIPT_ACP_REGISTRY.read_text(encoding="utf-8")
+    assert f'"@github/copilot@{COPILOT_CLI_VERSION}"' in typescript_text
+
+
 def test_agent_server_runtime_pins_cannot_drift_between_sites() -> None:
     """Duplicated hand pins are validated, not assumed to agree.
 
@@ -393,7 +422,7 @@ def test_default_preinstalled_acp_providers_matches_dockerfile_and_workflow() ->
     drifting apart.
     """
     default_csv = ",".join(DEFAULT_PREINSTALLED_ACP_PROVIDERS)
-    assert default_csv == "claude-code,codex,gemini-cli"
+    assert default_csv == "claude-code,codex,gemini-cli,copilot-cli"
 
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
     assert f"ARG INSTALL_ACP_PROVIDERS={default_csv}" in dockerfile_text

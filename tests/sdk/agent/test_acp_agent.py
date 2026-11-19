@@ -9399,6 +9399,7 @@ class TestACPMcpForwarding:
         seed_path = Path(oauth_bridge["args"][-1])
         seed = seed_path.read_text()
         assert seed_path.is_absolute()
+        assert not seed_path.is_relative_to(tmp_path)
         assert "atlassian-access-do-not-log" in seed
         assert "atlassian-refresh-do-not-log" in seed
         if os.name != "nt":

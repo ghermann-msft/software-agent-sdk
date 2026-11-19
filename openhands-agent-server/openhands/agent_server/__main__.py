@@ -11,6 +11,9 @@ import uvicorn
 from uvicorn import Config
 
 from openhands.agent_server.logging_config import LOGGING_CONFIG
+from openhands.sdk.agent.acp_oauth_seeds import (
+    cleanup_stale_acp_oauth_seed_roots,
+)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -232,6 +235,7 @@ def _setup_crash_diagnostics() -> None:
 def main() -> None:
     # Set up crash diagnostics early, before any other initialization
     _setup_crash_diagnostics()
+    cleanup_stale_acp_oauth_seed_roots()
 
     parser = argparse.ArgumentParser(description="OpenHands Agent Server App")
     parser.add_argument(

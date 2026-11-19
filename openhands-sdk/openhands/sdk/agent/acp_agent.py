@@ -110,6 +110,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
+from openhands.sdk.agent.acp_oauth_seeds import get_acp_oauth_seed_dir
 from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
@@ -2872,7 +2873,7 @@ class ACPAgent(AgentBase):
             return None
         directory = self._acp_file_secret_dir(state, provider.key)
         path = directory / "additional-mcp-config.json"
-        oauth_seed_dir = directory / "mcp-oauth"
+        oauth_seed_dir = get_acp_oauth_seed_dir(str(state.id))
         oauth_seed_paths: dict[str, Path] = {}
         oauth_seed_payloads: dict[Path, str] = {}
         for name, server in self.mcp_config.items():
@@ -5216,6 +5217,8 @@ class ACPAgent(AgentBase):
         for seed_dir in seed_dirs:
             with contextlib.suppress(OSError):
                 seed_dir.rmdir()
+            with contextlib.suppress(OSError):
+                seed_dir.parent.rmdir()
 
         if self._executor is not None and not credential_failures:
             try:

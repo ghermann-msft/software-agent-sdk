@@ -222,12 +222,40 @@ def test_npx_packages_prefers_pinned_package_flags():
     ]
 
 
-def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
+def test_acp_npm_cache_is_shared_across_conversations(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENHANDS_ACP_NPM_CACHE_DIR", raising=False)
     agent = _make_agent()
     state = _make_state(tmp_path)
     state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
 
     assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+def test_acp_npm_cache_uses_absolute_override(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "ssd" / ".openhands" / "npm-cache"
+    monkeypatch.setenv("OPENHANDS_ACP_NPM_CACHE_DIR", str(cache_dir))
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    state.persistence_dir = str(tmp_path / "azure-files" / "conversation-id")
+
+    assert agent._acp_npm_cache_dir(state) == cache_dir
+    assert cache_dir.is_dir()
+    if os.name == "nt":
+        assert cache_dir.drive
+    else:
+        assert cache_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_acp_npm_cache_rejects_relative_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENHANDS_ACP_NPM_CACHE_DIR", "relative/npm-cache")
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="OPENHANDS_ACP_NPM_CACHE_DIR must be an absolute path",
+    ):
+        agent._acp_npm_cache_dir(state)
 
 
 async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):

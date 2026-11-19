@@ -201,6 +201,7 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # can try to resolve against the parent package instead of the requested one.
 _INHERITED_NPM_ENV_EXACT: frozenset[str] = frozenset({"INIT_CWD"})
 _INHERITED_NPM_ENV_PREFIXES: tuple[str, ...] = ("npm_", "NPM_")
+_ACP_NPM_CACHE_DIR_ENV = "OPENHANDS_ACP_NPM_CACHE_DIR"
 
 # JSON-RPC error codes from the ACP server that are transient and worth
 # retrying.  These map to server-side failures (HTTP 500 equivalents) where
@@ -2811,6 +2812,14 @@ class ACPAgent(AgentBase):
         return Path(os.path.abspath(root))
 
     def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+        override = os.environ.get(_ACP_NPM_CACHE_DIR_ENV)
+        if override:
+            cache_dir = Path(override)
+            if not cache_dir.is_absolute():
+                raise ValueError(f"{_ACP_NPM_CACHE_DIR_ENV} must be an absolute path")
+            cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            cache_dir.chmod(0o700)
+            return cache_dir
         if state.persistence_dir:
             root = Path(state.persistence_dir).parent
         else:

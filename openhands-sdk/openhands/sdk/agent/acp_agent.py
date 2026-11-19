@@ -836,7 +836,7 @@ def _azure_workload_identity_bridge_server(
 ) -> McpServerStdio:
     assert server.url is not None
     bridge_args = ["--url", server.url, "--scope", auth.scope]
-    executable_name = Path(sys.executable).name
+    executable_name = sys.executable.replace("\\", "/").rsplit("/", 1)[-1]
     if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
         args = [
             "--mcp-azure-workload-identity-bridge",
@@ -865,7 +865,7 @@ def _oauth_bridge_server(name: str, seed_path: Path) -> McpServerStdio:
         "--mcp-oauth-bridge-seed",
         str(seed_path),
     ]
-    executable_name = Path(sys.executable).name
+    executable_name = sys.executable.replace("\\", "/").rsplit("/", 1)[-1]
     if executable_name in {"openhands-agent-server", "openhands-agent-server.exe"}:
         args = bridge_args
     else:

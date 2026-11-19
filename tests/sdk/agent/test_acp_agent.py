@@ -8991,7 +8991,16 @@ class TestMcpConfigToAcpServers:
         assert "Authorization" not in payload
         assert "Bearer" not in payload
 
-    def test_oauth_bridge_uses_packaged_agent_server_executable(self, tmp_path):
+    @pytest.mark.parametrize(
+        "executable",
+        [
+            "/usr/local/bin/openhands-agent-server",
+            r"C:\AgentServer\openhands-agent-server.exe",
+        ],
+    )
+    def test_oauth_bridge_uses_packaged_agent_server_executable(
+        self, tmp_path, executable
+    ):
         seed_path = tmp_path / "oauth-seed.json"
         cfg = self._config(
             {
@@ -9005,7 +9014,7 @@ class TestMcpConfigToAcpServers:
         with patch.object(
             acp_agent_module.sys,
             "executable",
-            "/usr/local/bin/openhands-agent-server",
+            executable,
         ):
             out = _mcp_config_to_acp_servers(
                 cfg,
@@ -9014,7 +9023,7 @@ class TestMcpConfigToAcpServers:
                 oauth_seed_paths={"atlassian-rovo": seed_path},
             )
 
-        assert out[0].command == "/usr/local/bin/openhands-agent-server"
+        assert out[0].command == executable
         assert out[0].args == [
             "--mcp-oauth-bridge",
             "--mcp-oauth-bridge-seed",
@@ -9218,7 +9227,14 @@ class TestMcpConfigToAcpServers:
         assert "Authorization" not in payload
         assert "Bearer" not in payload
 
-    def test_azure_bridge_uses_packaged_agent_server_executable(self):
+    @pytest.mark.parametrize(
+        "executable",
+        [
+            "/usr/local/bin/openhands-agent-server",
+            r"C:\AgentServer\openhands-agent-server.exe",
+        ],
+    )
+    def test_azure_bridge_uses_packaged_agent_server_executable(self, executable):
         cfg = self._config(
             {
                 "foundry": {
@@ -9231,14 +9247,14 @@ class TestMcpConfigToAcpServers:
         with patch.object(
             acp_agent_module.sys,
             "executable",
-            "/usr/local/bin/openhands-agent-server",
+            executable,
         ):
             out = _mcp_config_to_acp_servers(
                 cfg,
                 self._caps(http=False, sse=False),
             )
 
-        assert out[0].command == "/usr/local/bin/openhands-agent-server"
+        assert out[0].command == executable
         assert out[0].args[:2] == [
             "--mcp-azure-workload-identity-bridge",
             "--mcp-azure-bridge-url",

@@ -851,7 +851,7 @@ def _azure_workload_identity_bridge_server(
         name=name,
         command=sys.executable,
         args=args,
-        env=[],
+        env=[EnvVariable(name="OPENHANDS_SUPPRESS_BANNER", value="1")],
     )
 
 
@@ -950,6 +950,28 @@ def _mcp_config_to_acp_servers(
                 "'url' (http/sse)",
                 name,
             )
+    return result
+
+
+def _stdio_mcp_servers_to_copilot_config(
+    servers: Sequence[_ACPMcpServer],
+    mcp_config: dict[str, MCPServer],
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for server in servers:
+        if not isinstance(server, McpServerStdio):
+            continue
+        config: dict[str, object] = {
+            "type": "local",
+            "command": server.command,
+            "args": list(server.args),
+            "env": {item.name: item.value for item in server.env},
+            "tools": ["*"],
+        }
+        source = mcp_config.get(server.name)
+        if source is not None and source.cwd is not None:
+            config["cwd"] = source.cwd
+        result[server.name] = config
     return result
 
 
@@ -2797,6 +2819,29 @@ class ACPAgent(AgentBase):
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(os.path.abspath(cache_dir))
 
+    def _materialize_copilot_stdio_mcp_config(
+        self,
+        state: ConversationState,
+    ) -> Path | None:
+        provider = self._resolved_provider()
+        if provider is None or provider.key != "copilot-cli":
+            return None
+        directory = self._acp_file_secret_dir(state, provider.key)
+        path = directory / "additional-mcp-config.json"
+        servers = _mcp_config_to_acp_servers(self.mcp_config, None)
+        mcp_servers = _stdio_mcp_servers_to_copilot_config(servers, self.mcp_config)
+        if not mcp_servers:
+            path.unlink(missing_ok=True)
+            return None
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        directory.parent.chmod(0o700)
+        write_secret_file(
+            path,
+            json.dumps({"mcpServers": mcp_servers}, separators=(",", ":")),
+        )
+        return path
+
     async def _warm_npx_cache(
         self,
         packages: Sequence[str],
@@ -2881,7 +2926,7 @@ class ACPAgent(AgentBase):
         (the auth-conflict strip is keyed on ``CLAUDE_CODE_OAUTH_TOKEN``, not on
         the config dir), so the data-dir var it sets never affects auth.
         """
-        provider = detect_acp_provider_by_command(self.acp_command)
+        provider = self._resolved_provider()
         if provider is None or provider.data_dir_env_var is None:
             return
         env_var = provider.data_dir_env_var
@@ -3225,26 +3270,39 @@ class ACPAgent(AgentBase):
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
+        copilot_mcp_config = self._materialize_copilot_stdio_mcp_config(state)
+        if copilot_mcp_config is not None:
+            args.extend(
+                [
+                    "--additional-mcp-config",
+                    f"@{copilot_mcp_config}",
+                ]
+            )
         # Codex ignores OPENAI_BASE_URL; translate it into the config key read by
         # the adapter. The helper returns a child-only environment and never
         # mutates the fully assembled mapping above.
         env = _with_codex_base_url(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
-        provider = detect_acp_provider_by_command(self.acp_command)
+        launch_provider = self._resolved_provider()
         packages = _npx_packages(self.acp_command)
-        if provider is not None and packages:
+        if launch_provider is not None and packages:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
             try:
                 self._executor.run_async(
-                    self._warm_npx_cache(packages, provider.key, env, working_dir),
+                    self._warm_npx_cache(
+                        packages,
+                        launch_provider.key,
+                        env,
+                        working_dir,
+                    ),
                     timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
                 )
             except Exception as error:
                 logger.warning(
                     "ACP provider npx cache warm failed: provider=%s; "
                     "continuing with normal startup: %s",
-                    provider.key,
+                    launch_provider.key,
                     error,
                 )
 
@@ -3389,6 +3447,12 @@ class ACPAgent(AgentBase):
                 and session_caps.additional_directories is not None
             )
             acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
+            if launch_provider is not None and launch_provider.key == "copilot-cli":
+                acp_mcp_servers[:] = [
+                    server
+                    for server in acp_mcp_servers
+                    if not isinstance(server, McpServerStdio)
+                ]
             if acp_mcp_servers:
                 logger.info(
                     "Forwarding %d MCP server(s) to ACP session: %s",

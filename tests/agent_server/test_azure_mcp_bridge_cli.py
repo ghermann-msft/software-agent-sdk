@@ -1,3 +1,4 @@
+import os
 import sys
 from unittest.mock import patch
 
@@ -27,3 +28,24 @@ def test_agent_server_runs_packaged_azure_mcp_bridge() -> None:
         url="https://foundry.example.com/mcp",
         scope="api://foundry/.default",
     )
+
+
+def test_agent_server_bridge_mode_suppresses_sdk_banner(capsys) -> None:
+    argv = [
+        "openhands-agent-server",
+        "--mcp-azure-workload-identity-bridge",
+        "--mcp-azure-bridge-url",
+        "https://foundry.example.com/mcp",
+    ]
+
+    with (
+        patch.object(sys, "argv", argv),
+        patch.dict(os.environ, {"OPENHANDS_SUPPRESS_BANNER": "1"}),
+        patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+        patch(
+            "openhands.sdk.mcp.azure_stdio_bridge.run_azure_workload_identity_bridge"
+        ),
+    ):
+        main()
+
+    assert capsys.readouterr().out == ""

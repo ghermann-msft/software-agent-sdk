@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import threading
 import time
 import uuid
@@ -6439,7 +6440,7 @@ class TestACPSessionIdPersistence:
     """
 
     @staticmethod
-    def _transport_patches(conn):
+    def _transport_patches(conn, spawn_calls=None):
         """Context manager stacking the transport-layer mocks that let
         _start_acp_server run without spawning a real subprocess.
         """
@@ -6452,7 +6453,9 @@ class TestACPSessionIdPersistence:
         mock_process.stdout = MagicMock()
         mock_process.stderr = MagicMock()
 
-        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        async def _fake_create_subprocess_exec(*args, **kwargs):
+            if spawn_calls is not None:
+                spawn_calls.append((args, kwargs))
             return mock_process
 
         async def _fake_filter(_src, _dst):
@@ -6486,12 +6489,12 @@ class TestACPSessionIdPersistence:
         return stack
 
     @staticmethod
-    def _patched_start_acp_server(agent, state, *, conn):
+    def _patched_start_acp_server(agent, state, *, conn, spawn_calls=None):
         """Invoke the real _start_acp_server with ACP transport layers mocked."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent._executor = AsyncExecutor()
-        with TestACPSessionIdPersistence._transport_patches(conn):
+        with TestACPSessionIdPersistence._transport_patches(conn, spawn_calls):
             agent._start_acp_server(state)
 
     @staticmethod
@@ -9108,6 +9111,9 @@ class TestMcpConfigToAcpServers:
             "--scope",
             "api://foundry/.default",
         ]
+        assert [(item.name, item.value) for item in server.env] == [
+            ("OPENHANDS_SUPPRESS_BANNER", "1")
+        ]
         payload = server.model_dump_json()
         assert "Authorization" not in payload
         assert "Bearer" not in payload
@@ -9235,6 +9241,102 @@ class TestACPMcpForwarding:
 
         conn.new_session.assert_awaited_once()
         assert conn.new_session.call_args.kwargs["mcp_servers"] == []
+
+    def test_copilot_stdio_servers_use_private_startup_config(self, tmp_path, caplog):
+        secret = "perforce-password-do-not-log"
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={
+                "perforce": {
+                    "command": "p4-mcp-server",
+                    "args": ["--stdio"],
+                    "env": {
+                        "P4PORT": "ssl:p4.example.com:1666",
+                        "P4PASSWD": secret,
+                    },
+                },
+                "foundry": {
+                    "url": "https://foundry.example.com/mcp",
+                    "auth": {
+                        "strategy": "azure_workload_identity",
+                        "scope": "api://foundry/.default",
+                    },
+                },
+                "atlassian": {"url": "https://atlassian.example.com/mcp"},
+            },
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+        spawn_calls = []
+
+        with caplog.at_level("DEBUG"):
+            TestACPSessionIdPersistence._patched_start_acp_server(
+                agent,
+                state,
+                conn=conn,
+                spawn_calls=spawn_calls,
+            )
+
+        process_args, _ = spawn_calls[0]
+        option_index = process_args.index("--additional-mcp-config")
+        config_reference = process_args[option_index + 1]
+        assert config_reference.startswith("@")
+        config_path = Path(config_reference[1:])
+        config = json.loads(config_path.read_text())
+        assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == secret
+        assert config["mcpServers"]["foundry"]["env"] == {
+            "OPENHANDS_SUPPRESS_BANNER": "1"
+        }
+        if os.name != "nt":
+            assert config_path.stat().st_mode & 0o777 == 0o600
+        assert secret not in " ".join(str(arg) for arg in process_args)
+        assert secret not in caplog.text
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["atlassian"]
+
+    def test_copilot_resume_recreates_stdio_startup_config(self, tmp_path):
+        agent = _make_agent(
+            acp_server="copilot-cli",
+            mcp_config={
+                "perforce": {
+                    "command": "p4-mcp-server",
+                    "env": {"P4PASSWD": "current-secret"},
+                }
+            },
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        config_path = agent._materialize_copilot_stdio_mcp_config(state)
+        assert config_path is not None
+        config_path.write_text('{"stale":true}')
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        config = json.loads(config_path.read_text())
+        assert config["mcpServers"]["perforce"]["env"]["P4PASSWD"] == ("current-secret")
+        conn.load_session.assert_awaited_once()
+        assert conn.load_session.call_args.kwargs["mcp_servers"] == []
+
+    def test_non_copilot_provider_keeps_stdio_in_session_payload(self, tmp_path):
+        agent = _make_agent(
+            mcp_config={"perforce": {"command": "p4-mcp-server"}},
+        )
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+        spawn_calls = []
+
+        TestACPSessionIdPersistence._patched_start_acp_server(
+            agent,
+            state,
+            conn=conn,
+            spawn_calls=spawn_calls,
+        )
+
+        process_args, _ = spawn_calls[0]
+        assert "--additional-mcp-config" not in process_args
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [server.name for server in servers] == ["perforce"]
 
 
 # ---------------------------------------------------------------------------

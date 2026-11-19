@@ -858,12 +858,19 @@ class LocalConversation(BaseConversation):
 
     def _latest_acp_prompt_message_id(self) -> str | None:
         """Id of the most recent ACP prompt message, or None if there is none."""
-        acp_prompt_messages = [
-            event
-            for event in self._state.active_branch()
-            if _is_acp_prompt_message(event)
-        ]
-        return acp_prompt_messages[-1].id if acp_prompt_messages else None
+        message = self._latest_acp_prompt_message()
+        return message.id if message is not None else None
+
+    def _latest_acp_prompt_message(self) -> MessageEvent | None:
+        """Most recent ACP prompt message, or None if there is none."""
+        return next(
+            (
+                event
+                for event in reversed(self._state.active_branch())
+                if _is_acp_prompt_message(event)
+            ),
+            None,
+        )
 
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
@@ -2109,13 +2116,13 @@ class LocalConversation(BaseConversation):
         return not isinstance(self.agent, ACPAgent)
 
     def _memory_is_enabled(self) -> bool:
-        return (
-            self._memory_provider is not None
-            and sys.platform.startswith("linux")
-            and not isinstance(self.agent, ACPAgent)
-        )
+        return self._memory_provider is not None and sys.platform.startswith("linux")
 
-    def _recall_memory_for_message(self, message: Message) -> str | None:
+    def _recall_memory_for_message(
+        self,
+        message: Message,
+        source_event_id: str,
+    ) -> str | None:
         if not self._memory_is_enabled():
             return None
 
@@ -2139,6 +2146,7 @@ class LocalConversation(BaseConversation):
                 result = provider.recall(
                     MemoryRecallRequest(
                         conversation_id=self._state.id,
+                        source_event_id=source_event_id,
                         query=query,
                         max_tokens=max_tokens,
                         reason=reason,
@@ -2441,7 +2449,8 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
-        memory_context = self._recall_memory_for_message(message)
+        message_event_id = str(uuid.uuid4())
+        memory_context = self._recall_memory_for_message(message, message_event_id)
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -2477,6 +2486,7 @@ class LocalConversation(BaseConversation):
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
             user_msg_event = MessageEvent(
+                id=message_event_id,
                 source="user",
                 llm_message=message,
                 activated_skills=activated_skill_names,

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.memory import MEMORY_INDEX_RELPATH
 from openhands.sdk.context.memory_provider import (
@@ -22,6 +23,7 @@ from openhands.sdk.context.memory_provider import (
     MemoryRecord,
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.testing import TestLLM
@@ -300,3 +302,164 @@ def test_fork_preserves_broker_memory_provider(
     assert len(provider.requests) == 2
     assert provider.requests[0].conversation_id != provider.requests[1].conversation_id
     assert provider.requests[1].reason == "new_task"
+
+
+@pytest.mark.asyncio
+async def test_acp_memory_recalls_before_prompt_without_mutating_user_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.recall_requests: list[MemoryRecallRequest] = []
+
+        def recall(self, request: MemoryRecallRequest) -> MemoryRecallResult:
+            self.recall_requests.append(request)
+            return MemoryRecallResult(
+                memories=(
+                    MemoryRecord(
+                        source_memory_id="memory-1",
+                        source_event_id="prior-event",
+                        source_conversation_id="prior-conversation",
+                        date=datetime(2026, 11, 17, tzinfo=UTC),
+                        scope=(),
+                        relevance=0.9,
+                        uncertainty=0.1,
+                        content="Check the reverse proxy idle timeout.",
+                    ),
+                )
+            )
+
+        def reflect(self, request):
+            raise AssertionError("reflect should not be called")
+
+    async def astep(
+        agent,
+        conversation,
+        on_event,
+        on_token=None,
+        prompt_message=None,
+    ) -> None:
+        assert prompt_message is not None
+        blocks = agent._build_acp_prompt(prompt_message)
+        assert blocks is not None
+        texts = [block.text for block in blocks if hasattr(block, "text")]
+        assert texts[0] == "Fix the production timeout."
+        assert "Check the reverse proxy idle timeout." in texts[1]
+        on_event(
+            MessageEvent(
+                source="agent",
+                llm_message=Message(
+                    role="assistant",
+                    content=[TextContent(text="Raised the idle timeout.")],
+                ),
+            )
+        )
+        conversation.state.transition(
+            ConversationExecutionStatus.FINISHED,
+            "test ACP turn finished",
+        )
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation.sys.platform",
+        "linux",
+    )
+    provider = Provider()
+    conversation = LocalConversation(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=tmp_path / "workspace",
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+        memory_provider=provider,
+    )
+    try:
+        with (
+            patch.object(LocalConversation, "_ensure_agent_ready"),
+            patch.object(ACPAgent, "astep", new=astep),
+        ):
+            conversation.send_message("Fix the production timeout.")
+            await conversation.arun()
+    finally:
+        conversation.close()
+
+    user_event = next(
+        event
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent) and event.source == "user"
+    )
+    assert provider.recall_requests[0].source_event_id == user_event.id
+
+
+def test_acp_recall_outage_preserves_original_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Provider:
+        def recall(self, request):
+            raise OSError("broker unavailable")
+
+        def reflect(self, request):
+            raise AssertionError("reflect should not be called")
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation.sys.platform",
+        "linux",
+    )
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=tmp_path / "workspace",
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+        memory_provider=Provider(),
+    )
+    try:
+        conversation.send_message("Fix the production timeout.")
+        event = next(
+            event
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "user"
+        )
+        blocks = agent._build_acp_prompt(event)
+    finally:
+        conversation.close()
+
+    assert event.llm_message.content == [
+        TextContent(text="Fix the production timeout.")
+    ]
+    assert blocks is not None
+    texts = [block.text for block in blocks if hasattr(block, "text")]
+    assert texts[0] == "Fix the production timeout."
+    assert "Long-term memory is currently unavailable" in texts[1]
+
+
+def test_acp_memory_stays_disabled_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Provider:
+        def recall(self, request):
+            raise AssertionError("Windows ACP conversations must not call memory")
+
+        def reflect(self, request):
+            raise AssertionError("Windows ACP conversations must not call memory")
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation.sys.platform",
+        "win32",
+    )
+    conversation = LocalConversation(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=tmp_path / "workspace",
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+        memory_provider=Provider(),
+    )
+    try:
+        conversation.send_message("Fix the production timeout.")
+        event = next(
+            event
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "user"
+        )
+    finally:
+        conversation.close()
+
+    assert event.extended_content == []

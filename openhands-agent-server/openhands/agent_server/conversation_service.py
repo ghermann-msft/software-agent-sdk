@@ -2624,6 +2624,7 @@ class ConversationService:
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
             hindsight_memory=self.hindsight_memory,
+            session_api_key=self.session_api_key,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.

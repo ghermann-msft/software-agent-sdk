@@ -15,6 +15,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context.memory_provider import (
     MemoryRecallRequest,
     MemoryReflectRequest,
+    MemoryRetainRequest,
     MemoryScope,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -121,6 +122,153 @@ def test_hindsight_provider_degrades_invalid_response_to_unavailable(
 
     assert not result.available
     assert result.content is None
+
+
+def test_hindsight_provider_enqueues_private_user_retention(
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    def post(url, *, json, headers, timeout):
+        captured.update(url=url, json=json, headers=headers, timeout=timeout)
+        return httpx.Response(
+            202,
+            request=httpx.Request("POST", url),
+            json={
+                "event_id": "retention-event-1",
+                "status": "queued",
+                "duplicate": True,
+            },
+        )
+
+    monkeypatch.setattr("openhands.agent_server.hindsight_memory.httpx.post", post)
+    conversation_id = uuid4()
+    provider = HindsightBrokerMemoryProvider(
+        HindsightMemorySpec(
+            broker_url="http://memory-broker:8080",
+            identity="identity-1",
+            scope=[
+                MemoryScope(type="server", id="deployment-1"),
+                MemoryScope(type="organization", id="org-halo-studios"),
+                MemoryScope(type="private_user", id="user-1"),
+            ],
+        ),
+        session_api_key="session-key",
+    )
+
+    result = provider.retain(
+        MemoryRetainRequest(
+            conversation_id=conversation_id,
+            source_event_id="mcp-request-1",
+            occurred_at=datetime(2026, 11, 17, tzinfo=UTC),
+            content="The reverse proxy idle timeout is 120 seconds.",
+        )
+    )
+
+    assert result.status == "queued"
+    assert result.event_id == "retention-event-1"
+    assert result.duplicate
+    assert captured["url"] == "http://memory-broker:8080/api/v1/hindsight/retain"
+    assert captured["headers"] == {"X-Session-API-Key": "session-key"}
+    assert captured["json"] == {
+        "conversation_id": str(conversation_id),
+        "source_event_id": "mcp-request-1",
+        "occurred_at": "2026-11-17T00:00:00Z",
+        "content": "The reverse proxy idle timeout is 120 seconds.",
+        "scope": {"type": "private_user", "id": "user-1"},
+    }
+
+
+def test_hindsight_retain_outage_degrades_to_unavailable(
+    monkeypatch,
+) -> None:
+    def post(url, *, json, headers, timeout):
+        raise httpx.ConnectError("broker unavailable")
+
+    monkeypatch.setattr("openhands.agent_server.hindsight_memory.httpx.post", post)
+    provider = HindsightBrokerMemoryProvider(
+        HindsightMemorySpec(
+            broker_url="http://memory-broker:8080",
+            identity="identity-1",
+            scope=[MemoryScope(type="private_user", id="user-1")],
+        ),
+        session_api_key="session-key",
+    )
+
+    result = provider.retain(
+        MemoryRetainRequest(
+            conversation_id=uuid4(),
+            source_event_id="mcp-request-1",
+            occurred_at=datetime(2026, 11, 17, tzinfo=UTC),
+            content="The reverse proxy idle timeout is 120 seconds.",
+        )
+    )
+
+    assert not result.available
+    assert result.status == "unavailable"
+
+
+def test_hindsight_retain_policy_denial_is_not_reported_as_outage(
+    monkeypatch,
+) -> None:
+    def post(url, *, json, headers, timeout):
+        response = httpx.Response(
+            403,
+            request=httpx.Request("POST", url),
+            json={"detail": "trusted approval required"},
+        )
+        raise httpx.HTTPStatusError(
+            "retention denied",
+            request=response.request,
+            response=response,
+        )
+
+    monkeypatch.setattr("openhands.agent_server.hindsight_memory.httpx.post", post)
+    provider = HindsightBrokerMemoryProvider(
+        HindsightMemorySpec(
+            broker_url="http://memory-broker:8080",
+            identity="identity-1",
+            scope=[MemoryScope(type="private_user", id="user-1")],
+        ),
+        session_api_key="session-key",
+    )
+
+    result = provider.retain(
+        MemoryRetainRequest(
+            conversation_id=uuid4(),
+            source_event_id="mcp-request-1",
+            occurred_at=datetime(2026, 11, 17, tzinfo=UTC),
+            content="Policy-controlled content.",
+        )
+    )
+
+    assert result.available
+    assert result.status == "denied"
+
+
+def test_hindsight_retain_never_selects_shared_scope() -> None:
+    provider = HindsightBrokerMemoryProvider(
+        HindsightMemorySpec(
+            broker_url="http://memory-broker:8080",
+            identity="identity-1",
+            scope=[
+                MemoryScope(type="organization", id="org-halo-studios"),
+                MemoryScope(type="repository", id="OpenHands/software-agent-sdk"),
+            ],
+        ),
+        session_api_key="session-key",
+    )
+
+    result = provider.retain(
+        MemoryRetainRequest(
+            conversation_id=uuid4(),
+            source_event_id="mcp-request-1",
+            occurred_at=datetime(2026, 11, 17, tzinfo=UTC),
+            content="This must not be promoted into a shared scope.",
+        )
+    )
+
+    assert result.status == "denied"
 
 
 def test_hindsight_spec_exposes_one_trusted_active_organization() -> None:

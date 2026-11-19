@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -12,12 +13,16 @@ from openhands.sdk.context.memory_provider import (
     MemoryRecord,
     MemoryReflectRequest,
     MemoryReflectResult,
+    MemoryRetainRequest,
+    MemoryRetainResult,
     MemoryScope,
     RecallMemoryAction,
     ReflectMemoryAction,
+    RetainMemoryAction,
     create_memory_tools,
     format_recall_context,
 )
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 
 
 def _record(
@@ -180,3 +185,40 @@ def test_explicit_memory_tools_cap_budget_and_degrade_to_unavailable() -> None:
             query="too much",
             max_tokens=EXPLICIT_MEMORY_TOKEN_BUDGET + 1,
         )
+
+
+def test_retain_memory_tool_uses_private_policy_without_authority_arguments() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.requests: list[MemoryRetainRequest] = []
+
+        def recall(self, request):
+            return MemoryRecallResult()
+
+        def reflect(self, request):
+            return MemoryReflectResult()
+
+        def retain(self, request: MemoryRetainRequest) -> MemoryRetainResult:
+            self.requests.append(request)
+            return MemoryRetainResult(status="queued")
+
+    provider = Provider()
+    conversation_id = uuid4()
+    tools = create_memory_tools(provider, conversation_id)
+    retain_tool = next(tool for tool in tools if tool.name == "retain_memory")
+    executor = retain_tool.executor
+    assert executor is not None
+    conversation = MagicMock(spec=LocalConversation)
+    conversation.state.last_user_message_id = "user-event-1"
+    action = RetainMemoryAction(content="Use focused tests for memory behavior.")
+
+    first = executor(action, conversation=conversation)
+    second = executor(action, conversation=conversation)
+
+    assert first.text == "Retention queued by the trusted broker."
+    assert second.text == first.text
+    assert provider.requests[0].conversation_id == conversation_id
+    assert provider.requests[0].content == action.content
+    assert provider.requests[0].source_event_id == provider.requests[1].source_event_id
+    assert not hasattr(action, "scope")
+    assert not hasattr(action, "approval_token")

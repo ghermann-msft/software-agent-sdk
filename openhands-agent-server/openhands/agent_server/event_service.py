@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import threading
 import time
 import traceback
@@ -19,6 +20,10 @@ from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
     ConversationOwnershipLostError,
+)
+from openhands.agent_server.hindsight_mcp_bridge import (
+    HINDSIGHT_MCP_SERVER_NAME,
+    create_hindsight_mcp_server,
 )
 from openhands.agent_server.hindsight_memory import (
     HindsightBrokerMemoryProvider,
@@ -265,6 +270,22 @@ def _without_agent_context_secret(
     )
 
 
+def _with_hindsight_mcp_bridge(
+    agent: AgentBase,
+    *,
+    spec: HindsightMemorySpec,
+    conversation_id: UUID,
+) -> AgentBase:
+    if not isinstance(agent, ACPAgent) or not sys.platform.startswith("linux"):
+        return agent
+    mcp_config = dict(agent.mcp_config)
+    mcp_config[HINDSIGHT_MCP_SERVER_NAME] = create_hindsight_mcp_server(
+        spec,
+        conversation_id,
+    )
+    return agent.model_copy(update={"mcp_config": mcp_config})
+
+
 @dataclass
 class EventService:
     """
@@ -284,6 +305,7 @@ class EventService:
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     hindsight_memory: HindsightMemorySpec | None = None
+    session_api_key: str | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
         default_factory=dict
     )
@@ -1434,6 +1456,14 @@ class EventService:
                     reasoning_content=reasoning if isinstance(reasoning, str) else None,
                 )
 
+        memory_provider = (
+            HindsightBrokerMemoryProvider(
+                self.hindsight_memory,
+                session_api_key=self.session_api_key,
+            )
+            if self.hindsight_memory is not None
+            else None
+        )
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -1458,12 +1488,14 @@ class EventService:
             observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
             mcp_startup_budget=MCP_STARTUP_BUDGET_SECONDS,
-            memory_provider=(
-                HindsightBrokerMemoryProvider(self.hindsight_memory)
-                if self.hindsight_memory is not None
-                else None
-            ),
+            memory_provider=memory_provider,
         )
+        if self.hindsight_memory is not None:
+            conversation.agent = _with_hindsight_mcp_bridge(
+                conversation.agent,
+                spec=self.hindsight_memory,
+                conversation_id=self.stored.id,
+            )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)

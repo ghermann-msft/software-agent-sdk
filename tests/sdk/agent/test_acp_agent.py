@@ -655,9 +655,43 @@ class TestACPAgentValidation:
 
         assert blocks is not None
         texts = [b.text for b in blocks if hasattr(b, "text")]
-        assert "First block." in texts
-        assert "Second block." in texts
-        assert sum(1 for t in texts if t == "Prefer concise responses.") == 1
+        assert texts == [
+            "First block.",
+            "Second block.",
+            "Prefer concise responses.",
+        ]
+
+    def test_build_acp_prompt_keeps_memory_separate_from_user_text(self):
+        agent = _make_agent()
+        event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Fix the production timeout.")],
+            ),
+            extended_content=[
+                TextContent(
+                    text=(
+                        "<LONG_TERM_MEMORY_CONTEXT>\n"
+                        "<UNTRUSTED_CONTENT>historical data</UNTRUSTED_CONTENT>\n"
+                        "</LONG_TERM_MEMORY_CONTEXT>"
+                    )
+                )
+            ],
+        )
+
+        blocks = agent._build_acp_prompt(event)
+
+        assert blocks is not None
+        texts = [b.text for b in blocks if hasattr(b, "text")]
+        assert texts == [
+            "Fix the production timeout.",
+            (
+                "<LONG_TERM_MEMORY_CONTEXT>\n"
+                "<UNTRUSTED_CONTENT>historical data</UNTRUSTED_CONTENT>\n"
+                "</LONG_TERM_MEMORY_CONTEXT>"
+            ),
+        ]
 
     def test_build_acp_prompt_includes_image_content(self):
         agent = _make_agent()

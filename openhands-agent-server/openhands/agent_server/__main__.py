@@ -277,8 +277,21 @@ def main() -> None:
             f"{_EXTRA_PYTHON_PATH_ENV} environment variable."
         ),
     )
+    parser.add_argument(
+        "--hindsight-mcp-bridge",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
+
+    if args.hindsight_mcp_bridge:
+        from openhands.agent_server.hindsight_mcp_bridge import (
+            run_hindsight_mcp_bridge,
+        )
+
+        run_hindsight_mcp_bridge()
+        return
 
     # Handle browser check (should run without importing user modules)
     if args.check_browser:

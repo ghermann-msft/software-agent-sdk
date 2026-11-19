@@ -3854,9 +3854,8 @@ class ACPAgent(AgentBase):
         self, event: MessageEvent
     ) -> list[TextContentBlock | ImageContentBlock] | None:
         """Build the ACP content blocks for one user turn."""
-        message = event.to_llm_message()
         blocks: list[TextContentBlock | ImageContentBlock] = []
-        for content in message.content:
+        for content in event.llm_message.content:
             if isinstance(content, TextContent) and content.text.strip():
                 blocks.append(text_block(content.text))
             elif isinstance(content, ImageContent):
@@ -3864,6 +3863,9 @@ class ACPAgent(AgentBase):
                     acp_block = _image_url_to_acp_block(url)
                     if acp_block is not None:
                         blocks.append(acp_block)
+        for content in event.extended_content:
+            if content.text.strip():
+                blocks.append(text_block(content.text))
         if (
             self._suffix_install_state == "pending_first_prompt"
             and self._installed_suffix
@@ -4265,9 +4267,9 @@ class ACPAgent(AgentBase):
             # to ERROR rather than reusing an ambiguous ACP session.
             self._restart_session_after_drain_timeout(state, on_event)
 
-        # Conversation implementations already attach per-turn AgentContext
-        # extensions to MessageEvent.extended_content; MessageEvent.to_llm_message()
-        # merges those extensions with the user text.
+        # Conversation implementations attach per-turn AgentContext extensions to
+        # MessageEvent.extended_content. _build_acp_prompt keeps those extensions
+        # as distinct ACP content blocks instead of rewriting the user's message.
         prompt_blocks: list[Any] | None = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":

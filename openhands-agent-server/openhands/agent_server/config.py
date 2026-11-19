@@ -535,8 +535,9 @@ class Config(BaseModel):
         default=None,
         description=(
             "Deployment-owned trusted-broker configuration for Linux OpenHands "
-            "long-term-memory recall. The broker owns Hindsight credentials and "
-            "authorization; this configuration contains neither."
+            "long-term-memory recall and policy-gated retention. The broker owns "
+            "Hindsight credentials and authorization; this configuration contains "
+            "neither."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

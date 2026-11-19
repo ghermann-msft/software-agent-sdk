@@ -187,7 +187,8 @@ class InitRequest(BaseModel):
         default=None,
         description=(
             "Trusted broker endpoint plus deterministic identity and typed scope "
-            "for long-term-memory reads. Contains no Hindsight credentials."
+            "for long-term-memory reads and policy-gated retention. Contains no "
+            "Hindsight credentials."
         ),
     )
 

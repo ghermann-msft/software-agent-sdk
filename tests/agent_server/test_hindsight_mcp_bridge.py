@@ -169,10 +169,7 @@ def test_bridge_retain_keeps_content_verbatim_and_policy_fields_internal() -> No
     assert not hasattr(request, "approval_token")
 
 
-def test_linux_acp_agent_receives_bridge_without_changing_original_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("openhands.agent_server.event_service.sys.platform", "linux")
+def test_acp_agent_receives_bridge_without_changing_original_config() -> None:
     agent = ACPAgent(acp_command=["copilot", "--acp"])
 
     configured = _with_hindsight_mcp_bridge(

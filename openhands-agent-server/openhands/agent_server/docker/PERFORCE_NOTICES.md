@@ -2,8 +2,10 @@
 
 This image redistributes these unmodified official Perforce binaries:
 
-- Helix Core command-line client (`p4.exe`) 2025.2 for Windows x64, downloaded
-  from
+- Helix Core command-line client (`p4.exe`) 2025.2 build 3086021 for Windows
+  x64. The unmodified, Perforce-signed binary is vendored at
+  `vendor/perforce/p4-2025.2.3086021.exe`; it was obtained from Perforce's
+  official 2025.2 Windows x64 distribution at
   <https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe>.
 - P4 MCP Server 2026.4.3126709 for Windows, downloaded from the
   [`v2026.4.3126709` release](https://github.com/perforce/p4mcp-server/releases/tag/v2026.4.3126709).

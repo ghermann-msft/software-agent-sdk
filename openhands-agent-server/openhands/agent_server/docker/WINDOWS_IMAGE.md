@@ -17,10 +17,12 @@ docker build `
 ```
 
 The Dockerfile pins the Python builder and Windows Server Core runtime by
-manifest digest. It also pins MinGit, the official Helix Core command-line
-client, and the official P4 MCP Server Windows release by URL and SHA-256.
-Updating any of these inputs is an explicit image-contract change. Production
-deployments must pin the resulting image digest rather than a mutable tag.
+manifest digest. It also pins MinGit and the official P4 MCP Server Windows
+release by versioned URL and SHA-256. The official Helix Core command-line
+client is vendored as a Perforce-signed, SHA-256-pinned binary because
+Perforce's release-line download URL is mutable. Updating any of these inputs
+is an explicit image-contract change. Production deployments must pin the
+resulting image digest rather than a mutable tag.
 
 Linux and hosted Windows CI validate the Dockerfile contract, build the Windows
 PyInstaller executable, and exercise the Windows terminal/file behavior. A real
@@ -80,7 +82,7 @@ The image includes:
 
 | Tool | Version/source | SHA-256 |
 |---|---|---|
-| `p4.exe` | [Helix Core CLI 2025.2 Windows x64](https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe) | `b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b` |
+| `p4.exe` | Helix Core CLI 2025.2 build 3086021 Windows x64, vendored from the [official Perforce distribution](https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe) | `b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b` |
 | `p4-mcp-server.exe` | [P4 MCP Server 2026.4.3126709 Windows release](https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip) | `7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879` |
 
 Perforce redistribution and dependency notices are stored at

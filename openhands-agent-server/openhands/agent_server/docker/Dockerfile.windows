@@ -31,7 +31,8 @@ SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreferenc
 
 ARG MINGIT_URL=https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip
 ARG MINGIT_SHA256=e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877
-ARG P4_URL=https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe
+ARG P4_VERSION=2025.2
+ARG P4_BUILD=3086021
 ARG P4_SHA256=b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b
 ARG P4_MCP_VERSION=2026.4.3126709
 ARG P4_MCP_URL=https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip
@@ -119,9 +120,15 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:NODE_URL -OutFile C:\node.zip; 
     icacls C:\ACP /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null; `
     icacls C:\Node /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null
 
-RUN Invoke-WebRequest -UseBasicParsing -Uri $env:P4_URL -OutFile C:\Perforce\p4.exe; `
-    if ((Get-FileHash C:\Perforce\p4.exe -Algorithm SHA256).Hash -ne $env:P4_SHA256) { `
+COPY openhands-agent-server\openhands\agent_server\docker\vendor\perforce\p4-2025.2.3086021.exe C:\Perforce\p4.exe
+
+RUN if ((Get-FileHash C:\Perforce\p4.exe -Algorithm SHA256).Hash -ne $env:P4_SHA256) { `
         throw 'p4.exe SHA256 verification failed' `
+    }; `
+    $p4Version = (& C:\Perforce\p4.exe -V | Select-String '^Rev\.').Line; `
+$expectedP4Revision = 'Rev. P4/NTX64/' + $env:P4_VERSION + '/' + $env:P4_BUILD + ' ('; `
+if ($LASTEXITCODE -ne 0 -or -not $p4Version.StartsWith($expectedP4Revision)) { `
+        throw ('Unexpected p4.exe version: ' + $p4Version) `
     }; `
     Invoke-WebRequest -UseBasicParsing -Uri $env:P4_MCP_URL -OutFile C:\p4-mcp-server.zip; `
     if ((Get-FileHash C:\p4-mcp-server.zip -Algorithm SHA256).Hash -ne $env:P4_MCP_SHA256) { `

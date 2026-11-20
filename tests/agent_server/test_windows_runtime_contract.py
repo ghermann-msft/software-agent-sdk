@@ -1,3 +1,4 @@
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -131,10 +132,8 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "servercore:ltsc2025@sha256:" in dockerfile
     assert "ARG MINGIT_URL=https://github.com/git-for-windows/" in dockerfile
     assert "MINGIT_SHA256=" in dockerfile
-    assert (
-        "ARG P4_URL=https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe"
-        in dockerfile
-    )
+    assert "ARG P4_VERSION=2025.2" in dockerfile
+    assert "ARG P4_BUILD=3086021" in dockerfile
     assert (
         "ARG P4_SHA256="
         "b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b" in dockerfile
@@ -183,7 +182,13 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
         "ARG POWERSHELL_SHA256="
         "7c74e03b20a75b59715847439d046a6214b1863ee79b187872980f139bb4a05f" in dockerfile
     )
+    assert (
+        "COPY openhands-agent-server\\openhands\\agent_server\\docker\\vendor\\"
+        "perforce\\p4-2025.2.3086021.exe C:\\Perforce\\p4.exe" in dockerfile
+    )
+    assert "$env:P4_URL" not in dockerfile
     assert "throw 'p4.exe SHA256 verification failed'" in dockerfile
+    assert "throw ('Unexpected p4.exe version: ' + $p4Version)" in dockerfile
     assert "throw 'p4-mcp-server SHA256 verification failed'" in dockerfile
     assert "throw 'Copilot CLI SHA256 verification failed'" in dockerfile
     assert "throw 'Copilot CLI license SHA256 verification failed'" in dockerfile
@@ -220,6 +225,24 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert (
         'ENTRYPOINT ["C:\\\\AgentServer\\\\openhands-agent-server.exe"]' in dockerfile
     )
+
+
+def test_vendored_p4_binary_matches_pinned_hash() -> None:
+    binary = (
+        Path(__file__).parents[2]
+        / "openhands-agent-server"
+        / "openhands"
+        / "agent_server"
+        / "docker"
+        / "vendor"
+        / "perforce"
+        / "p4-2025.2.3086021.exe"
+    )
+
+    with binary.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+
+    assert digest == "b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b"
 
 
 def test_windows_workflow_smokes_every_acp_shim_and_two_acp_transports() -> None:

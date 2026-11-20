@@ -1,5 +1,4 @@
 import asyncio
-import sys
 import threading
 import time
 import traceback
@@ -276,7 +275,7 @@ def _with_hindsight_mcp_bridge(
     spec: HindsightMemorySpec,
     conversation_id: UUID,
 ) -> AgentBase:
-    if not isinstance(agent, ACPAgent) or not sys.platform.startswith("linux"):
+    if not isinstance(agent, ACPAgent):
         return agent
     mcp_config = dict(agent.mcp_config)
     mcp_config[HINDSIGHT_MCP_SERVER_NAME] = create_hindsight_mcp_server(

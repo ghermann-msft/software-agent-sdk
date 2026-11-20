@@ -1,9 +1,11 @@
 import os
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from acp.schema import McpServerStdio
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
@@ -183,16 +185,43 @@ def test_linux_acp_agent_receives_bridge_without_changing_original_config(
     assert HINDSIGHT_MCP_SERVER_NAME in configured.mcp_config
 
 
-def test_windows_acp_agent_does_not_receive_hindsight_bridge(
+@pytest.mark.asyncio
+async def test_windows_acp_agent_receives_launchable_hindsight_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("openhands.agent_server.event_service.sys.platform", "win32")
     agent = ACPAgent(acp_command=["copilot", "--acp"])
 
-    configured = _with_hindsight_mcp_bridge(
-        agent,
-        spec=_spec(),
-        conversation_id=uuid4(),
+    with monkeypatch.context() as platform:
+        platform.setattr("sys.platform", "win32")
+        configured = _with_hindsight_mcp_bridge(
+            agent,
+            spec=_spec(),
+            conversation_id=uuid4(),
+        )
+
+    assert agent.mcp_config == {}
+    server = configured.mcp_config[HINDSIGHT_MCP_SERVER_NAME]
+    assert server.command == sys.executable
+    assert server.args == ["-m", "openhands.agent_server", "--hindsight-mcp-bridge"]
+    forwarded = _mcp_config_to_acp_servers(
+        {HINDSIGHT_MCP_SERVER_NAME: server},
+        SimpleNamespace(),
+    )
+    assert len(forwarded) == 1
+    stdio_server = forwarded[0]
+    assert isinstance(stdio_server, McpServerStdio)
+    assert stdio_server.command == server.command
+    assert stdio_server.args == server.args
+
+    env = dict(os.environ)
+    env.update({item.name: item.value for item in stdio_server.env})
+    transport = StdioTransport(
+        command=stdio_server.command,
+        args=stdio_server.args,
+        env=env,
     )
 
-    assert configured is agent
+    async with Client(transport) as client:
+        tools = await client.list_tools()
+
+    assert {tool.name for tool in tools} == {"recall", "reflect", "retain"}

@@ -539,7 +539,7 @@ class Config(BaseModel):
     hindsight_memory: HindsightMemorySpec | None = Field(
         default=None,
         description=(
-            "Deployment-owned trusted-broker configuration for Linux OpenHands "
+            "Deployment-owned trusted-broker configuration for OpenHands "
             "long-term-memory recall and policy-gated retention. The broker owns "
             "Hindsight credentials and authorization; this configuration contains "
             "neither."

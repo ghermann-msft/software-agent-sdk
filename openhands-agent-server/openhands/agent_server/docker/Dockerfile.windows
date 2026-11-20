@@ -1,8 +1,81 @@
 # escape=`
 
 ARG PYTHON_BASE=python:3.13.17-windowsservercore-ltsc2025@sha256:806c67285624534627be8202d476b4c793c4d28e9c2342d881db420ce626033a
+ARG DLL_BASE=mcr.microsoft.com/windows/server:ltsc2025@sha256:b0a62a6e3590a063f3211efbec59d25c248e44e0890196ef9b7b8c06d60c4785
 ARG RUNTIME_BASE=mcr.microsoft.com/windows/servercore:ltsc2025@sha256:e3945d74c66f90f05c156bf32ad22f6642f27166a090cbd45a2035aab054c83e
 ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli,kimi-code,pi,opencode,copilot-cli
+
+FROM ${DLL_BASE} AS unreal-runtime-files
+
+SHELL ["powershell", "-NoLogo", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+ARG DIRECTX_REDIST_URL=https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe
+ARG DIRECTX_REDIST_SHA256=053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b
+ARG DXC_URL=https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.6.2104/dxc_2021_04-20.zip
+ARG DXC_SHA256=ee5e96d58134957443ded04be132e2e19240c534d7602e3ab8fd5adc5156014a
+ARG UNREAL_VERSION_SPECIFIC_DLLS=
+
+RUN New-Item -ItemType Directory -Force C:\UnrealRuntime, C:\UnrealRuntimeLicenses | Out-Null; `
+    $systemDlls = @( `
+        'avicap32.dll', `
+        'avifil32.dll', `
+        'avrt.dll', `
+        'd3d10warp.dll', `
+        'D3DSCache.dll', `
+        'dsound.dll', `
+        'dxva2.dll', `
+        'glu32.dll', `
+        'InputHost.dll', `
+        'mf.dll', `
+        'mfcore.dll', `
+        'mfplat.dll', `
+        'mfplay.dll', `
+        'mfreadwrite.dll', `
+        'msacm32.dll', `
+        'msdmo.dll', `
+        'msvfw32.dll', `
+        'opengl32.dll', `
+        'ResampleDMO.dll', `
+        'ResourcePolicyClient.dll', `
+        'XInput1_4.dll' `
+    ); `
+    if ($env:UNREAL_VERSION_SPECIFIC_DLLS) { `
+        $systemDlls += $env:UNREAL_VERSION_SPECIFIC_DLLS.Split(';') `
+    }; `
+    foreach ($dll in $systemDlls) { `
+        $source = Join-Path C:\Windows\System32 $dll; `
+        if (-not (Test-Path $source)) { throw ('Required Windows DLL is missing: ' + $dll) }; `
+        Copy-Item $source C:\UnrealRuntime -Force `
+    }; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:DIRECTX_REDIST_URL -OutFile C:\directx-redist.exe; `
+    if ((Get-FileHash C:\directx-redist.exe -Algorithm SHA256).Hash -ne $env:DIRECTX_REDIST_SHA256) { `
+        throw 'DirectX redist SHA256 verification failed' `
+    }; `
+    $directx = Start-Process C:\directx-redist.exe `
+        -ArgumentList '/Q', '/T:C:\DirectX' `
+        -PassThru `
+        -Wait; `
+    if ($directx.ExitCode -ne 0) { throw ('DirectX extraction failed: ' + $directx.ExitCode) }; `
+    $cabDlls = @( `
+        @('APR2007_xinput_x64.cab', 'xinput1_3.dll'), `
+        @('Feb2010_X3DAudio_x64.cab', 'X3DAudio1_7.dll'), `
+        @('Jun2010_D3DCompiler_43_x64.cab', 'D3DCompiler_43.dll'), `
+        @('Jun2010_XAudio_x64.cab', 'XAudio2_7.dll'), `
+        @('Jun2010_XAudio_x64.cab', 'XAPOFX1_5.dll') `
+    ); `
+    foreach ($entry in $cabDlls) { `
+        & expand.exe (Join-Path C:\DirectX $entry[0]) ('-F:' + $entry[1]) C:\UnrealRuntime | Out-Null; `
+        if ($LASTEXITCODE -ne 0) { throw ('DirectX DLL extraction failed: ' + $entry[1]) } `
+    }; `
+    Remove-Item C:\directx-redist.exe, C:\DirectX -Recurse -Force; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:DXC_URL -OutFile C:\dxc.zip; `
+    if ((Get-FileHash C:\dxc.zip -Algorithm SHA256).Hash -ne $env:DXC_SHA256) { `
+        throw 'DXC SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\dxc.zip -DestinationPath C:\dxc; `
+    Copy-Item C:\dxc\bin\x64\dxcompiler.dll, C:\dxc\bin\x64\dxil.dll C:\UnrealRuntime; `
+    Copy-Item C:\dxc\LICENSE.TXT C:\UnrealRuntimeLicenses\DirectXShaderCompiler-LICENSE.txt; `
+    Remove-Item C:\dxc.zip, C:\dxc -Recurse -Force
 
 FROM ${PYTHON_BASE} AS builder
 
@@ -50,6 +123,16 @@ ARG COPILOT_CLI_LICENSE_SHA256=c694e2d9b3f3bb40704ca9bdc823dc90269999ab4c013dfd8
 ARG POWERSHELL_VERSION=7.7.0
 ARG POWERSHELL_URL=https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip
 ARG POWERSHELL_SHA256=7c74e03b20a75b59715847439d046a6214b1863ee79b187872980f139bb4a05f
+ARG PYTHON_VERSION=3.13.17
+ARG AZURE_CLI_VERSION=2.92.0
+ARG AZURE_CLI_URL=https://github.com/Azure/azure-cli/releases/download/azure-cli-2.92.0/azure-cli-2.92.0-x64.zip
+ARG AZURE_CLI_SHA256=2cbd2c10e4b2ec4de2ab98eaa69f51fa4c9dfc4922b5116ada88091663d92af2
+ARG AZCOPY_VERSION=10.34.1
+ARG AZCOPY_URL=https://github.com/Azure/azure-storage-azcopy/releases/download/v10.34.1/azcopy_windows_amd64_10.34.1.zip
+ARG AZCOPY_SHA256=6d299fdf2dbf466167e9806576d15cb0de3c4ce8769caf5d1c1110877e5f66ff
+ARG VC_REDIST_VERSION=14.44.35211.0
+ARG VC_REDIST_URL=https://download.visualstudio.microsoft.com/download/pr/e9604e21-4b79-4096-a4b3-1b63d4b55b4d/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe
+ARG VC_REDIST_SHA256=cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown
 
@@ -61,8 +144,11 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
     Remove-Item C:\MinGit.zip; `
     New-Item -ItemType Directory -Force `
         C:\AgentServer, `
+        C:\AgentServer\gpu, `
         C:\AgentServer\licenses, `
         C:\ACP, `
+        C:\AzureCLI, `
+        C:\AzCopy, `
         C:\Node, `
         C:\OpenHands, `
         C:\OpenHands\bash_events, `
@@ -75,9 +161,71 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
         C:\workspace\project, `
         C:\workspace\worktrees | Out-Null; `
     icacls C:\OpenHands /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null; `
+    icacls C:\AgentServer\gpu /grant '*S-1-5-93-2-1:(OI)(CI)M' /T /C | Out-Null; `
     icacls C:\workspace /grant '*S-1-5-93-2-1:(OI)(CI)F' /T /C | Out-Null
 
 COPY --from=builder C:\src\acp-install-plan.json C:\acp-install-plan.json
+COPY --from=builder C:\Python C:\Python
+COPY --from=unreal-runtime-files C:\UnrealRuntime\ C:\Windows\System32\
+COPY --from=unreal-runtime-files C:\UnrealRuntimeLicenses\ C:\AgentServer\licenses\
+
+RUN $pythonVersion = & C:\Python\python.exe --version; `
+    if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne ('Python ' + $env:PYTHON_VERSION)) { `
+        throw ('Unexpected Python version: ' + $pythonVersion) `
+    }; `
+    & C:\Python\python.exe -c 'import ssl, sqlite3, venv'; `
+    if ($LASTEXITCODE -ne 0) { throw 'Python standard-library probe failed' }; `
+    & C:\Python\python.exe -m pip --version; `
+    if ($LASTEXITCODE -ne 0) { throw 'Python pip probe failed' }; `
+    Copy-Item C:\Python\LICENSE.txt C:\AgentServer\licenses\Python-LICENSE.txt; `
+    icacls C:\Python /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:VC_REDIST_URL -OutFile C:\vc-redist.exe; `
+    if ((Get-FileHash C:\vc-redist.exe -Algorithm SHA256).Hash -ne $env:VC_REDIST_SHA256) { `
+        throw 'Visual C++ redist SHA256 verification failed' `
+    }; `
+    $installer = Start-Process C:\vc-redist.exe `
+        -ArgumentList '/install', '/quiet', '/norestart' `
+        -PassThru `
+        -Wait; `
+    if ($installer.ExitCode -notin @(0, 1638, 3010)) { `
+        throw ('Visual C++ redist installation failed: ' + $installer.ExitCode) `
+    }; `
+    Remove-Item C:\vc-redist.exe
+
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:AZURE_CLI_URL -OutFile C:\azure-cli.zip; `
+    if ((Get-FileHash C:\azure-cli.zip -Algorithm SHA256).Hash -ne $env:AZURE_CLI_SHA256) { `
+        throw 'Azure CLI SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\azure-cli.zip -DestinationPath C:\AzureCLI; `
+    Remove-Item C:\azure-cli.zip; `
+    if (-not (Test-Path C:\AzureCLI\bin\az.cmd)) { `
+        throw 'az.cmd was not present in the Azure CLI release archive' `
+    }; `
+    Copy-Item C:\AzureCLI\CLI_LICENSE.rtf C:\AgentServer\licenses\Azure-CLI-LICENSE.rtf; `
+    $azureVersion = (& C:\AzureCLI\bin\az.cmd version --output json | ConvertFrom-Json).'azure-cli'; `
+    if ($LASTEXITCODE -ne 0 -or $azureVersion -ne $env:AZURE_CLI_VERSION) { `
+        throw ('Unexpected Azure CLI version: ' + $azureVersion) `
+    }; `
+    icacls C:\AzureCLI /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null
+
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:AZCOPY_URL -OutFile C:\azcopy.zip; `
+    if ((Get-FileHash C:\azcopy.zip -Algorithm SHA256).Hash -ne $env:AZCOPY_SHA256) { `
+        throw 'AzCopy SHA256 verification failed' `
+    }; `
+    Expand-Archive C:\azcopy.zip -DestinationPath C:\azcopy-extract; `
+    Remove-Item C:\azcopy.zip; `
+    $azcopySource = Join-Path C:\azcopy-extract ('azcopy_windows_amd64_' + $env:AZCOPY_VERSION); `
+    if (-not (Test-Path (Join-Path $azcopySource 'azcopy.exe'))) { `
+        throw 'azcopy.exe was not present in the AzCopy release archive' `
+    }; `
+    Copy-Item (Join-Path $azcopySource '*') C:\AzCopy -Recurse -Force; `
+    Remove-Item C:\azcopy-extract -Recurse -Force; `
+    $azcopyVersion = (& C:\AzCopy\azcopy.exe --version) -join ' '; `
+    if ($LASTEXITCODE -ne 0 -or $azcopyVersion -notmatch [regex]::Escape($env:AZCOPY_VERSION)) { `
+        throw ('Unexpected AzCopy version: ' + $azcopyVersion) `
+    }; `
+    Copy-Item C:\AzCopy\NOTICE.txt C:\AgentServer\licenses\AzCopy-NOTICE.txt; `
+    icacls C:\AzCopy /grant '*S-1-5-93-2-1:(OI)(CI)RX' /T /C | Out-Null
 
 RUN Invoke-WebRequest -UseBasicParsing -Uri $env:NODE_URL -OutFile C:\node.zip; `
     if ((Get-FileHash C:\node.zip -Algorithm SHA256).Hash -ne $env:NODE_SHA256) { `
@@ -197,8 +345,10 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:COPILOT_CLI_URL -OutFile C:\cop
 
 COPY --from=builder C:\src\dist\openhands-agent-server.exe C:\AgentServer\openhands-agent-server.exe
 COPY openhands-agent-server\openhands\agent_server\docker\PERFORCE_NOTICES.md C:\AgentServer\licenses\PERFORCE_NOTICES.md
+COPY openhands-agent-server\openhands\agent_server\docker\UNREAL_WINDOWS_RUNTIME_NOTICES.md C:\AgentServer\licenses\UNREAL_WINDOWS_RUNTIME_NOTICES.md
+COPY openhands-agent-server\openhands\agent_server\docker\enable-graphics-apis.ps1 C:\AgentServer\enable-graphics-apis.ps1
 
-ENV PATH="C:\Copilot;C:\ACP;C:\Node;C:\PowerShell;C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0" `
+ENV PATH="C:\AgentServer\gpu;C:\Copilot;C:\ACP;C:\AzureCLI\bin;C:\AzCopy;C:\Node;C:\PowerShell;C:\Python;C:\Python\Scripts;C:\Perforce;C:\Perforce\p4mcp;C:\MinGit\cmd;C:\MinGit\mingw64\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0" `
     LOG_JSON=true `
     OH_ACP_SKILL_SOURCING=openhands_managed `
     OH_BASH_EVENTS_DIR=C:\OpenHands\bash_events `
@@ -206,9 +356,11 @@ ENV PATH="C:\Copilot;C:\ACP;C:\Node;C:\PowerShell;C:\Perforce;C:\Perforce\p4mcp;
     OH_CONVERSATION_WORKTREE_ROOT=C:\workspace\worktrees `
     OH_ENABLE_BROWSER=false `
     OH_ENABLE_VSCODE=false `
+    OH_GPU_RUNTIME_PATH=C:\AgentServer\gpu `
     OH_PERSISTENCE_DIR=C:\OpenHands\persistence `
     OH_RUNTIME_API_PORT=8000 `
     OH_RUNTIME_COMMAND_SHELL=powershell.exe `
+    OH_RUNTIME_BOOTSTRAP_SCRIPT=C:\AgentServer\enable-graphics-apis.ps1 `
     OH_RUNTIME_CONTAINER_PLATFORM=windows/amd64 `
     OH_RUNTIME_DURABLE_STATE_PATH=C:\OpenHands `
     OH_RUNTIME_SPEC_ID=windows-server-2025-amd64 `

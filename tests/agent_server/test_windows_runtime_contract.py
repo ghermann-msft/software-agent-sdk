@@ -1,12 +1,17 @@
 import hashlib
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 import openhands.agent_server.config as config_module
 import openhands.agent_server.runtime_contract as runtime_contract
+from openhands.agent_server import __main__ as server_main
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config, default_conversation_worktree_root
 from openhands.sdk.settings.acp_install_catalog import (
@@ -128,8 +133,50 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
         / "Dockerfile.windows"
     ).read_text(encoding="utf-8")
 
-    assert "windowsservercore-ltsc2025@sha256:" in dockerfile
-    assert "servercore:ltsc2025@sha256:" in dockerfile
+    assert (
+        "ARG PYTHON_BASE=python:3.13.17-windowsservercore-ltsc2025@sha256:"
+        "806c67285624534627be8202d476b4c793c4d28e9c2342d881db420ce626033a"
+        in dockerfile
+    )
+    assert (
+        "ARG DLL_BASE=mcr.microsoft.com/windows/server:ltsc2025@sha256:"
+        "b0a62a6e3590a063f3211efbec59d25c248e44e0890196ef9b7b8c06d60c4785"
+        in dockerfile
+    )
+    assert (
+        "ARG RUNTIME_BASE=mcr.microsoft.com/windows/servercore:ltsc2025@sha256:"
+        "e3945d74c66f90f05c156bf32ad22f6642f27166a090cbd45a2035aab054c83e"
+        in dockerfile
+    )
+    assert (
+        "ARG DIRECTX_REDIST_SHA256="
+        "053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b"
+        in dockerfile
+    )
+    assert (
+        "ARG DXC_SHA256="
+        "ee5e96d58134957443ded04be132e2e19240c534d7602e3ab8fd5adc5156014a"
+        in dockerfile
+    )
+    assert "ARG VC_REDIST_VERSION=14.44.35211.0" in dockerfile
+    assert (
+        "ARG VC_REDIST_SHA256="
+        "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
+        in dockerfile
+    )
+    assert "ARG PYTHON_VERSION=3.13.17" in dockerfile
+    assert "ARG AZURE_CLI_VERSION=2.92.0" in dockerfile
+    assert (
+        "ARG AZURE_CLI_SHA256="
+        "2cbd2c10e4b2ec4de2ab98eaa69f51fa4c9dfc4922b5116ada88091663d92af2"
+        in dockerfile
+    )
+    assert "ARG AZCOPY_VERSION=10.34.1" in dockerfile
+    assert (
+        "ARG AZCOPY_SHA256="
+        "6d299fdf2dbf466167e9806576d15cb0de3c4ce8769caf5d1c1110877e5f66ff"
+        in dockerfile
+    )
     assert "ARG MINGIT_URL=https://github.com/git-for-windows/" in dockerfile
     assert "MINGIT_SHA256=" in dockerfile
     assert "ARG P4_VERSION=2025.2" in dockerfile
@@ -203,10 +250,32 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "C:\\Perforce\\p4mcp\\logs" in dockerfile
     assert "C:\\Copilot\\copilot.exe --no-auto-update help acp" in dockerfile
     assert "C:\\PowerShell\\pwsh.exe" in dockerfile
+    assert "C:\\Python\\python.exe --version" in dockerfile
+    assert "C:\\Python\\python.exe -c 'import ssl, sqlite3, venv'" in dockerfile
+    assert "C:\\Python\\python.exe -m pip --version" in dockerfile
+    assert "C:\\AzureCLI\\bin\\az.cmd version --output json" in dockerfile
+    assert "C:\\AzCopy\\azcopy.exe --version" in dockerfile
+    assert "COPY --from=builder C:\\Python C:\\Python" in dockerfile
+    for dll in (
+        "mfplat.dll",
+        "XInput1_4.dll",
+        "xinput1_3.dll",
+        "XAudio2_7.dll",
+        "D3DCompiler_43.dll",
+        "dxcompiler.dll",
+        "dxil.dll",
+    ):
+        assert dll in dockerfile
     assert "'*S-1-5-93-2-1:(OI)(CI)RX'" in dockerfile
     assert "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
     assert (
-        'ENV PATH="C:\\Copilot;C:\\ACP;C:\\Node;C:\\PowerShell;'
+        "icacls C:\\AgentServer\\gpu /grant "
+        "'*S-1-5-93-2-1:(OI)(CI)M'" in dockerfile
+    )
+    assert (
+        'ENV PATH="C:\\AgentServer\\gpu;C:\\Copilot;C:\\ACP;'
+        "C:\\AzureCLI\\bin;C:\\AzCopy;"
+        "C:\\Node;C:\\PowerShell;C:\\Python;C:\\Python\\Scripts;"
         "C:\\Perforce;C:\\Perforce\\p4mcp;"
         "C:\\MinGit\\cmd;C:\\MinGit\\mingw64\\bin;"
         "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;"
@@ -219,12 +288,183 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "OH_WORKSPACE_PATH=C:\\workspace\\project" in dockerfile
     assert "OH_RUNTIME_WORKSPACE_MOUNT_PATH=C:\\workspace" in dockerfile
     assert "OH_PERSISTENCE_DIR=C:\\OpenHands\\persistence" in dockerfile
+    assert "OH_GPU_RUNTIME_PATH=C:\\AgentServer\\gpu" in dockerfile
     assert "OH_CONVERSATION_WORKTREE_ROOT=C:\\workspace\\worktrees" in dockerfile
+    assert (
+        "OH_RUNTIME_BOOTSTRAP_SCRIPT=C:\\AgentServer\\enable-graphics-apis.ps1"
+        in dockerfile
+    )
+    assert "UNREAL_WINDOWS_RUNTIME_NOTICES.md" in dockerfile
+    assert "/latest/" not in dockerfile
+    assert "entrypoint.cmd" not in dockerfile
     assert "HEALTHCHECK" in dockerfile
     assert "http://127.0.0.1:8000/ready" in dockerfile
     assert (
         'ENTRYPOINT ["C:\\\\AgentServer\\\\openhands-agent-server.exe"]' in dockerfile
     )
+
+
+def test_windows_gpu_bootstrap_preserves_headless_operation() -> None:
+    script = (
+        Path(__file__).parents[2]
+        / "openhands-agent-server"
+        / "openhands"
+        / "agent_server"
+        / "docker"
+        / "enable-graphics-apis.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'if (-not (Test-Path $driverStore)) {' in script
+    assert "exit 0" in script
+    assert '"C:\\AgentServer\\gpu"' in script
+    assert "Join-Path $destinationDirectory $destinationName" in script
+    assert "HostDriverStore\\FileRepository" in script
+    assert "nvapi64.dll" in script
+    assert '"nvcuda_loader64.dll" = "nvcuda.dll"' in script
+    assert "aticfx64.dll" in script
+    assert "amfrt64.dll" in script
+    assert "[guid]::NewGuid()" in script
+    assert "Move-Item -Path $temporary -Destination $destination -Force" in script
+    assert "Remove-Item -Path $temporary -Force -ErrorAction SilentlyContinue" in script
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
+def test_windows_gpu_bootstrap_is_headless_idempotent_and_concurrent_safe(
+    tmp_path: Path,
+) -> None:
+    script = (
+        Path(__file__).parents[2]
+        / "openhands-agent-server"
+        / "openhands"
+        / "agent_server"
+        / "docker"
+        / "enable-graphics-apis.ps1"
+    )
+    driver_store = tmp_path / "HostDriverStore" / "FileRepository"
+    gpu_directory = tmp_path / "gpu"
+    environment = {
+        **os.environ,
+        "OH_HOST_DRIVER_STORE_PATH": str(driver_store),
+        "OH_GPU_RUNTIME_PATH": str(gpu_directory),
+    }
+    command = [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+    ]
+
+    headless = subprocess.run(
+        command,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert headless.returncode == 0, headless.stderr
+
+    nvidia_directory = driver_store / "nv_dispi.inf_amd64_test"
+    nvidia_directory.mkdir(parents=True)
+    expected_files = {
+        "nvapi64.dll": b"nvapi",
+        "nvEncodeAPI64.dll": b"nvencode",
+        "nvEncMFTH264x.dll": b"h264",
+        "nvEncMFThevcx.dll": b"hevc",
+        "nvDecMFTMjpeg.dll": b"mjpeg",
+        "nvDecMFTMjpegx.dll": b"mjpegx",
+        "nvptxJitCompiler64.dll": b"ptx",
+        "nvcuvid64.dll": b"cuvid",
+        "nvcuda64.dll": b"cuda64",
+        "nvcuda_loader64.dll": b"cuda",
+    }
+    for filename, content in expected_files.items():
+        (nvidia_directory / filename).write_bytes(content)
+
+    processes = [
+        subprocess.Popen(
+            command,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, f"{stdout}\n{stderr}"
+
+    repeated = subprocess.run(
+        command,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert (gpu_directory / "nvapi64.dll").read_bytes() == b"nvapi"
+    assert (gpu_directory / "nvcuvid.dll").read_bytes() == b"cuvid"
+    assert (gpu_directory / "nvcuda.dll").read_bytes() == b"cuda"
+    assert not list(gpu_directory.glob("*.tmp"))
+
+
+def test_runtime_bootstrap_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock()
+    monkeypatch.delenv("OH_RUNTIME_BOOTSTRAP_SCRIPT", raising=False)
+    monkeypatch.setattr(server_main.subprocess, "run", run)
+
+    server_main.run_runtime_bootstrap()
+
+    run.assert_not_called()
+
+
+def test_runtime_bootstrap_failure_stops_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = r"C:\AgentServer\enable-graphics-apis.ps1"
+    error = subprocess.CalledProcessError(1, "powershell.exe")
+    run = Mock(side_effect=error)
+    monkeypatch.setenv("OH_RUNTIME_BOOTSTRAP_SCRIPT", script)
+    monkeypatch.setattr(server_main.subprocess, "run", run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        server_main.run_runtime_bootstrap()
+
+    run.assert_called_once_with(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script,
+        ],
+        check=True,
+    )
+
+
+def test_normal_agent_server_startup_runs_runtime_bootstrap() -> None:
+    with (
+        patch.object(sys, "argv", ["openhands-agent-server"]),
+        patch.object(server_main, "_setup_crash_diagnostics"),
+        patch.object(server_main, "cleanup_stale_acp_oauth_seed_roots"),
+        patch.object(server_main, "run_runtime_bootstrap") as run_bootstrap,
+        patch.object(server_main, "extend_python_path"),
+        patch.object(server_main, "preload_modules"),
+        patch.object(server_main, "_auth_enabled", return_value=False),
+        patch.object(server_main, "Config"),
+        patch.object(server_main, "LoggingServer") as logging_server,
+    ):
+        server_main.main()
+
+    run_bootstrap.assert_called_once_with()
+    logging_server.return_value.run.assert_called_once_with()
 
 
 def test_vendored_p4_binary_matches_pinned_hash() -> None:
@@ -333,6 +573,17 @@ def test_windows_image_workflow_publishes_only_commit_addressed_tag() -> None:
     assert "Get-Command p4-mcp-server.exe -ErrorAction Stop" in workflow
     assert "Get-Command copilot.exe -ErrorAction Stop" in workflow
     assert "Get-Command pwsh.exe -ErrorAction Stop" in workflow
+    assert "Get-Command python.exe -ErrorAction Stop" in workflow
+    assert "Get-Command az.cmd -ErrorAction Stop" in workflow
+    assert "Get-Command azcopy.exe -ErrorAction Stop" in workflow
+    assert "python.exe -c 'import ssl, sqlite3, venv'" in workflow
+    assert "python.exe -m pip --version" in workflow
+    assert "C:\\AgentServer\\enable-graphics-apis.ps1" in workflow
+    assert "C:\\AgentServer\\gpu' -notin (`$env:PATH -split ';')" in workflow
+    assert workflow.count("& C:\\AgentServer\\enable-graphics-apis.ps1") == 2
+    assert "GPU bootstrap left temporary files." in workflow
+    assert "C:\\Windows\\System32\\dxcompiler.dll" in workflow
+    assert "C:\\Windows\\System32\\xinput1_3.dll" in workflow
     assert "p4.exe -V" in workflow
     assert "p4-mcp-server.exe --help" in workflow
     assert "copilot.exe --no-auto-update help acp" in workflow

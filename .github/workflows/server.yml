@@ -508,6 +508,31 @@ jobs:
                           'Get-Command opencode.cmd -ErrorAction Stop | Out-Null'
                           'Get-Command copilot.exe -ErrorAction Stop | Out-Null'
                           'Get-Command pwsh.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command python.exe -ErrorAction Stop | Out-Null'
+                          'Get-Command az.cmd -ErrorAction Stop | Out-Null'
+                          'Get-Command azcopy.exe -ErrorAction Stop | Out-Null'
+                          '$pythonVersion = python.exe --version'
+                          "if (`$LASTEXITCODE -ne 0 -or `$pythonVersion -ne 'Python 3.13.17') { throw 'python.exe version probe failed.' }"
+                          "python.exe -c 'import ssl, sqlite3, venv'"
+                          "if (`$LASTEXITCODE -ne 0) { throw 'python.exe standard-library probe failed.' }"
+                          'python.exe -m pip --version | Out-Null'
+                          "if (`$LASTEXITCODE -ne 0) { throw 'python.exe pip probe failed.' }"
+                          '$azureVersion = (az.cmd version --output json | ConvertFrom-Json)."azure-cli"'
+                          "if (`$LASTEXITCODE -ne 0 -or `$azureVersion -ne '2.92.0') { throw 'az.cmd version probe failed.' }"
+                          '$azcopyVersion = azcopy.exe --version'
+                          "if (`$LASTEXITCODE -ne 0 -or `$azcopyVersion -notmatch '10\.34\.1') { throw 'azcopy.exe version probe failed.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\mfplat.dll')) { throw 'mfplat.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\xinput1_3.dll')) { throw 'xinput1_3.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\XAudio2_7.dll')) { throw 'XAudio2_7.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\D3DCompiler_43.dll')) { throw 'D3DCompiler_43.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\dxcompiler.dll')) { throw 'dxcompiler.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\Windows\System32\dxil.dll')) { throw 'dxil.dll is missing.' }"
+                          "if (-not (Test-Path 'C:\AgentServer\enable-graphics-apis.ps1')) { throw 'GPU bootstrap is missing.' }"
+                          "if (`$env:OH_GPU_RUNTIME_PATH -ne 'C:\AgentServer\gpu') { throw 'GPU runtime path is not configured.' }"
+                          "if ('C:\AgentServer\gpu' -notin (`$env:PATH -split ';')) { throw 'GPU runtime path is not on PATH.' }"
+                          '& C:\AgentServer\enable-graphics-apis.ps1'
+                          '& C:\AgentServer\enable-graphics-apis.ps1'
+                          "if (Get-ChildItem 'C:\AgentServer\gpu' -Filter '*.tmp' -ErrorAction Stop) { throw 'GPU bootstrap left temporary files.' }"
                           'p4.exe -V'
                           'p4-mcp-server.exe --help | Out-Null'
                           "if (`$LASTEXITCODE -ne 0) { throw 'p4-mcp-server.exe --help failed.' }"

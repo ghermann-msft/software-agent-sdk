@@ -4,6 +4,7 @@ import faulthandler
 import importlib
 import os
 import signal
+import subprocess
 import sys
 from types import FrameType
 
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 
 _INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
 _EXTRA_PYTHON_PATH_ENV = "OH_EXTRA_PYTHON_PATH"
+_RUNTIME_BOOTSTRAP_SCRIPT_ENV = "OH_RUNTIME_BOOTSTRAP_SCRIPT"
 
 # Hosts that bind to every network interface. Binding to one of these without
 # authentication exposes the (otherwise unauthenticated) agent server to the
@@ -158,6 +160,27 @@ def preload_modules(modules_arg: str | None) -> None:
                 e,
             )
             raise
+
+
+def run_runtime_bootstrap() -> None:
+    script = os.environ.get(_RUNTIME_BOOTSTRAP_SCRIPT_ENV)
+    if not script:
+        return
+
+    logger.info("Running runtime bootstrap script: %s", script)
+    subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script,
+        ],
+        check=True,
+    )
 
 
 def check_browser():
@@ -357,6 +380,8 @@ def main() -> None:
             sys.exit(0)
         else:
             sys.exit(1)
+
+    run_runtime_bootstrap()
 
     # Extend sys.path before importing user modules so external .py files
     # are reachable — critical for PyInstaller binary builds.

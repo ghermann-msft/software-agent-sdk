@@ -16,13 +16,15 @@ docker build `
   .
 ```
 
-The Dockerfile pins the Python builder and Windows Server Core runtime by
-manifest digest. It also pins MinGit and the official P4 MCP Server Windows
-release by versioned URL and SHA-256. The official Helix Core command-line
-client is vendored as a Perforce-signed, SHA-256-pinned binary because
-Perforce's release-line download URL is mutable. Updating any of these inputs
-is an explicit image-contract change. Production deployments must pin the
-resulting image digest rather than a mutable tag.
+The Dockerfile pins the Python builder, Windows Server Core runtime, and
+matching full Windows Server DLL source by manifest digest. MinGit, the
+official P4 MCP Server, DirectX Shader Compiler, Azure CLI, AzCopy, and the
+legacy DirectX redist use versioned URLs and SHA-256 verification. The Visual
+C++ runtime uses Microsoft's immutable content-addressed URL. The official
+Helix Core command-line client is vendored as a Perforce-signed,
+SHA-256-pinned binary because Perforce's release-line download URL is mutable.
+Updating any of these inputs is an explicit image-contract change. Production
+deployments must pin the resulting image digest rather than a mutable tag.
 
 Linux and hosted Windows CI validate the Dockerfile contract, build the Windows
 PyInstaller executable, and exercise the Windows terminal/file behavior. A real
@@ -73,15 +75,39 @@ Mount `C:\workspace` for project files; conversations start in
 `C:\workspace\project` and git worktrees live in `C:\workspace\worktrees`.
 Mount `C:\OpenHands` for conversations, settings, and bash events. This keeps
 high-I/O checkout data separate from easily mounted durable metadata. Git for
-Windows, `p4.exe`, and `p4-mcp-server.exe` are on `PATH` for `ContainerUser`.
-The MCP server's log directory is writable without granting write access to the
-executables. Browser and VSCode capabilities are intentionally absent from this
-first minimal slice.
+Windows, Python, Azure CLI (`az`), AzCopy, `p4.exe`, and `p4-mcp-server.exe`
+are on `PATH` for `ContainerUser`. The MCP server's log directory is writable
+without granting write access to the executables. Browser and VSCode
+capabilities are intentionally absent from this first minimal slice.
+
+The image also contains the Windows multimedia, legacy DirectX, DXC/DXR, and
+Visual C++ runtime files required by Unreal Engine Windows applications. Before
+the Agent Server starts, its existing executable runs the configured GPU
+bootstrap script. The script copies NVIDIA or AMD user-mode API DLLs from
+`HostDriverStore` into the writable, image-local `C:\AgentServer\gpu` directory
+on `PATH` when the container was started with GPU support. Each DLL is staged
+under a unique temporary name and atomically moved into place, so repeated or
+concurrent startup cannot expose a partial copy. If `HostDriverStore` is absent,
+the script exits successfully and normal headless Agent Server operation is
+unchanged.
+
+To expose a compatible GPU to a process-isolated Windows container, use the
+device class documented by Microsoft:
+
+```powershell
+docker run `
+  --isolation process `
+  --device class/5B45201D-F2F2-4F3B-85BB-30FF1F953599 `
+  ghcr.io/openhands/agent-server:<commit-sha>-windows-ltsc2025-amd64
+```
 
 The image includes:
 
 | Tool | Version/source | SHA-256 |
 |---|---|---|
+| `python.exe` | Python 3.13.17 from the digest-pinned official Windows builder image | Image digest pinned in `Dockerfile.windows` |
+| `az.cmd` | [Azure CLI 2.92.0 x64 archive](https://github.com/Azure/azure-cli/releases/download/azure-cli-2.92.0/azure-cli-2.92.0-x64.zip) | `2cbd2c10e4b2ec4de2ab98eaa69f51fa4c9dfc4922b5116ada88091663d92af2` |
+| `azcopy.exe` | [AzCopy 10.34.1 Windows x64 archive](https://github.com/Azure/azure-storage-azcopy/releases/download/v10.34.1/azcopy_windows_amd64_10.34.1.zip) | `6d299fdf2dbf466167e9806576d15cb0de3c4ce8769caf5d1c1110877e5f66ff` |
 | `p4.exe` | Helix Core CLI 2025.2 build 3086021 Windows x64, vendored from the [official Perforce distribution](https://cdist2.perforce.com/perforce/r25.2/bin.ntx64/p4.exe) | `b40445fd623b885326d88f27d894b5078cda02a87589dd514925fc031ab2875b` |
 | `p4-mcp-server.exe` | [P4 MCP Server 2026.4.3126709 Windows release](https://github.com/perforce/p4mcp-server/releases/download/v2026.4.3126709/p4-mcp-server-win.zip) | `7e88b9c244616d5548f8939cb165136883ca3967c3726a7d47a7d963cc9ce879` |
 
@@ -89,6 +115,9 @@ Perforce redistribution and dependency notices are stored at
 `C:\AgentServer\licenses`. The checked-in source notice is
 [`PERFORCE_NOTICES.md`](PERFORCE_NOTICES.md); the image build also records the
 client's complete `p4 help -l legal` output as `Perforce-p4-legal.txt`.
+Unreal runtime, DirectX, Python, Azure CLI, AzCopy, and Visual C++ provenance is
+recorded in
+[`UNREAL_WINDOWS_RUNTIME_NOTICES.md`](UNREAL_WINDOWS_RUNTIME_NOTICES.md).
 
 The Linux image follows the same split: `/workspace`, `/workspace/project`, and
 `/workspace/worktrees` are high-performance workspace paths; `/openhands`,

@@ -663,7 +663,7 @@ class ConversationService:
                 continue
             try:
                 stored = StoredConversation.model_validate_json(
-                    meta_file.read_text(),
+                    meta_file.read_text(encoding="utf-8"),
                     context=cipher_context(
                         self._cipher_for(UUID(conversation_dir.name))
                     ),
@@ -677,7 +677,7 @@ class ConversationService:
                 if base_state_file.exists():
                     # Strict on purpose: a corrupt base state still drops the
                     # conversation from the catalog and logs below.
-                    payload = json.loads(base_state_file.read_text())
+                    payload = json.loads(base_state_file.read_text(encoding="utf-8"))
                     execution_status = ConversationExecutionStatus(
                         payload.get(
                             "execution_status", ConversationExecutionStatus.IDLE.value
@@ -721,7 +721,7 @@ class ConversationService:
         if not base_state_file.exists():
             return None
         return ConversationState.model_validate_json(
-            base_state_file.read_text(),
+            base_state_file.read_text(encoding="utf-8"),
             context=cipher_context(self._cipher_for(conversation_id)),
         )
 

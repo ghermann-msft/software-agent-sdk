@@ -202,6 +202,45 @@ async def test_trusted_organization_is_persisted_and_caller_cannot_override(tmp_
 
 
 @pytest.mark.asyncio
+async def test_reload_uses_utf8_for_persisted_conversation_state(
+    tmp_path, monkeypatch
+):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        tags={"encoding": "Ý"},
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(title="Checking integrations Ý")
+        )
+
+    conversation_dir = conversations_dir / info.id.hex
+    assert "Ý".encode() in (conversation_dir / "meta.json").read_bytes()
+    assert "Ý".encode() in (conversation_dir / "base_state.json").read_bytes()
+
+    original_read_text = Path.read_text
+
+    def read_text(path, encoding=None, errors=None):
+        return original_read_text(
+            path, encoding=encoding or "cp1252", errors=errors
+        )
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        reloaded = await service.get_conversation(info.id)
+
+    assert reloaded is not None
+    assert reloaded.title == "Checking integrations Ý"
+    assert reloaded.tags == {"encoding": "Ý"}
+
+
+@pytest.mark.asyncio
 async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"

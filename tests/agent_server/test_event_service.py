@@ -2406,6 +2406,32 @@ class TestEventServiceSaveMeta:
         assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
+    async def test_load_meta_uses_utf8(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        event_service.conversations_dir = tmp_path
+        event_service.conversation_dir.mkdir()
+        event_service.stored.title = "Checking integrations Ý"
+        await event_service.save_meta()
+        event_service.stored.title = None
+        assert "Ý".encode() in (
+            event_service.conversation_dir / "meta.json"
+        ).read_bytes()
+
+        original_read_text = Path.read_text
+
+        def read_text(path, encoding=None, errors=None):
+            return original_read_text(
+                path, encoding=encoding or "cp1252", errors=errors
+            )
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        await event_service.load_meta()
+
+        assert event_service.stored.title == "Checking integrations Ý"
+
+    @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_service_inactive(
         self, tmp_path
     ):

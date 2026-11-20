@@ -109,6 +109,51 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
         resumed.close()
 
 
+def test_persisted_client_tools_are_recovered_as_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = ClientToolSpec(
+        name="persist_utf8_tool",
+        description="Show Ý",
+    )
+    cid = uuid.uuid4()
+    persist_dir = tmp_path / "persist"
+    created = Conversation(
+        agent=_make_agent(),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(persist_dir),
+        conversation_id=cid,
+        client_tools=[spec],
+        delete_on_close=False,
+    )
+    created.close()
+    base_state = Path(created.get_persistence_dir(persist_dir, cid)) / "base_state.json"
+    assert "Ý".encode() in base_state.read_bytes()
+    _wipe_client_tool_globals([spec.name])
+
+    original_read_text = Path.read_text
+
+    def read_text(path, encoding=None, errors=None):
+        return original_read_text(
+            path, encoding=encoding or "cp1252", errors=errors
+        )
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    resumed = Conversation(
+        agent=_make_agent(),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(persist_dir),
+        conversation_id=cid,
+        delete_on_close=False,
+    )
+    try:
+        recovered = next(tool for tool in resumed.agent.tools if tool.name == spec.name)
+        assert recovered.description == "Show Ý"
+    finally:
+        resumed.close()
+
+
 def test_client_tool_named_like_an_unattached_builtin_resumes(
     tmp_path: Path,
 ) -> None:

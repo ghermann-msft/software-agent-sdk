@@ -2236,6 +2236,7 @@ class ACPAgent(AgentBase):
     _skills_root: Path | None = PrivateAttr(default=None)
     _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
+    _restart_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
     # turn already resolves through four of them.
@@ -4071,9 +4072,21 @@ class ACPAgent(AgentBase):
         # values through HTTP loopback to this same agent server. Keep it off the
         # server loop for the same reason LocalConversation.arun() offloads the
         # initial _ensure_agent_ready() path.
-        await asyncio.to_thread(
-            self._restart_session_after_drain_timeout, state, on_event
-        )
+        restart_task = self._restart_task
+        if restart_task is None:
+            restart_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._restart_session_after_drain_timeout,
+                    state,
+                    on_event,
+                )
+            )
+            self._restart_task = restart_task
+        try:
+            await asyncio.shield(restart_task)
+        finally:
+            if restart_task.done() and self._restart_task is restart_task:
+                self._restart_task = None
 
     def _request_session_cancel(self) -> None:
         """Ask the ACP server to cancel the active session prompt."""

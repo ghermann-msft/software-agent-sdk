@@ -2554,6 +2554,122 @@ class TestACPAgentAstep:
         )
         assert emitted
 
+    @pytest.mark.parametrize("restart_fails", [False, True])
+    def test_astep_reuses_restart_after_waiter_is_cancelled(
+        self,
+        tmp_path,
+        restart_fails,
+    ):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+        agent._restart_session_on_next_turn = True
+        conversation.state.agent_state = {
+            **conversation.state.agent_state,
+            "acp_session_id": "test-session",
+        }
+        prompt_calls = 0
+
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
+            nonlocal prompt_calls
+            prompt_calls += 1
+            mock_client.accumulated_text.append("answer")
+            return None
+
+        _agent_conn(agent).prompt = _fake_prompt
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        executor = AsyncExecutor()
+
+        async def _run_overlapping_turns() -> None:
+            caller_loop = asyncio.get_running_loop()
+            restart_entered = asyncio.Event()
+            release_restart = threading.Event()
+            restart_calls = 0
+            active_restarts = 0
+            max_active_restarts = 0
+
+            def _restart(self, state, on_event):  # noqa: ARG001
+                nonlocal restart_calls, active_restarts, max_active_restarts
+                assert self is agent
+                assert state.agent_state["acp_session_id"] == "test-session"
+                restart_calls += 1
+                active_restarts += 1
+                max_active_restarts = max(max_active_restarts, active_restarts)
+                if restart_calls == 1:
+                    caller_loop.call_soon_threadsafe(restart_entered.set)
+                    assert release_restart.wait(5.0)
+                    active_restarts -= 1
+                    if restart_fails:
+                        raise RuntimeError("restart failed")
+                    agent._restart_session_on_next_turn = False
+                    return
+                agent._restart_session_on_next_turn = False
+                active_restarts -= 1
+
+            with (
+                patch.object(
+                    ACPAgent,
+                    "_restart_session_after_drain_timeout",
+                    new=_restart,
+                ),
+                patch.object(
+                    ACPAgent,
+                    "_build_acp_prompt",
+                    return_value=[MagicMock()],
+                ),
+            ):
+                first_turn = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.wait_for(restart_entered.wait(), timeout=5.0)
+                first_turn.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first_turn
+                restart_task = agent._restart_task
+                assert restart_task is not None
+                assert not restart_task.done()
+
+                second_turn = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.sleep(0)
+                assert agent._restart_task is restart_task
+                assert restart_calls == 1
+                release_restart.set()
+                if restart_fails:
+                    with pytest.raises(RuntimeError, match="restart failed"):
+                        await asyncio.wait_for(second_turn, timeout=5.0)
+
+                    assert agent._restart_session_on_next_turn is True
+                    assert agent._restart_task is None
+                    await asyncio.wait_for(
+                        agent.astep(conversation, on_event=lambda _: None),
+                        timeout=5.0,
+                    )
+                else:
+                    await asyncio.wait_for(second_turn, timeout=5.0)
+
+            assert restart_calls == (2 if restart_fails else 1)
+            assert max_active_restarts == 1
+            assert agent._restart_task is None
+            assert prompt_calls == 1
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_overlapping_turns())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+
     def test_astep_active_prompt_survives_idle_window(self, tmp_path):
         """End-to-end via the real portal: an actively-streaming prompt that
         runs well past ``acp_prompt_timeout`` finalizes normally.

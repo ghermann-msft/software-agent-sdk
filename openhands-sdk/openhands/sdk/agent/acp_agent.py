@@ -2358,6 +2358,7 @@ class ACPAgent(AgentBase):
                     session_id, self._client._context_window
                 ),
                 response_id=session_id,
+                per_turn_token=usage_update.used if usage_update is not None else None,
             )
 
         # -- Cost derivation from tokens --------------------------------------

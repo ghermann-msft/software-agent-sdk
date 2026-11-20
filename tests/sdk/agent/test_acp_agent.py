@@ -3870,7 +3870,9 @@ class TestACPAgentTelemetry:
         assert llms[0] is agent.llm
         assert llms[0].model == "acp-managed"
 
-    def _make_step_fixtures(self, tmp_path, agent=None, usage=None, cost=None):
+    def _make_step_fixtures(
+        self, tmp_path, agent=None, usage=None, cost=None, context_used=None
+    ):
         """Set up agent + client + executor for step() telemetry tests."""
         if agent is None:
             agent = _make_agent()
@@ -3895,6 +3897,8 @@ class TestACPAgentTelemetry:
             mock_response.usage = None
             mock_response.field_meta = None
 
+        usage_tokens = usage or {}
+
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
             if cost is not None:
@@ -3902,6 +3906,11 @@ class TestACPAgentTelemetry:
                 mock_update.cost = MagicMock()
                 mock_update.cost.amount = cost[0]
                 mock_update.size = cost[1]
+                mock_update.used = (
+                    context_used
+                    if context_used is not None
+                    else usage_tokens.get("input", 0) + usage_tokens.get("output", 0)
+                )
                 mock_client._turn_usage_updates["test-session"] = mock_update
                 mock_client._context_window_by_session["test-session"] = cost[1]
                 mock_client._context_window = cost[1]
@@ -3938,6 +3947,35 @@ class TestACPAgentTelemetry:
         assert usage.cache_write_tokens == 5
         assert usage.reasoning_tokens == 20
         assert usage.context_window == 200000
+
+    def test_step_uses_usage_update_for_context_occupancy(self, tmp_path):
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={
+                "input": 602000,
+                "output": 1000,
+                "cache_read": 400000,
+                "cache_write": 2000,
+                "thought": 3000,
+            },
+            cost=(0.05, 200000),
+            context_used=150000,
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        metrics = agent.llm.metrics
+        usage = metrics.token_usages[0]
+        assert usage.per_turn_token == 150000
+        accumulated = metrics.accumulated_token_usage
+        assert accumulated is not None
+        assert accumulated.prompt_tokens == 602000
+        assert accumulated.completion_tokens == 1000
+        assert accumulated.cache_read_tokens == 400000
+        assert accumulated.cache_write_tokens == 2000
+        assert accumulated.reasoning_tokens == 3000
+        assert accumulated.context_window == 200000
+        assert accumulated.per_turn_token == 150000
 
     def test_step_handles_no_usage(self, tmp_path):
         """step() handles PromptResponse with no usage gracefully."""

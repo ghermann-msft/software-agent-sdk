@@ -220,10 +220,12 @@ class Metrics(MetricsSnapshot):
         reasoning_tokens: int = 0,
         *,
         model_name: str | None = None,
+        per_turn_token: int | None = None,
     ) -> None:
         """Add a single usage record."""
         # Token each turn for calculating context usage.
-        per_turn_token = prompt_tokens + completion_tokens
+        if per_turn_token is None:
+            per_turn_token = prompt_tokens + completion_tokens
 
         usage = TokenUsage(
             model=model_name or self.model_name,
@@ -266,6 +268,7 @@ class Metrics(MetricsSnapshot):
                 response_id=response_id,
                 reasoning_tokens=reasoning_tokens,
                 model_name=model_name,
+                per_turn_token=per_turn_token,
             )
 
     def merge(self, other: "Metrics") -> None:

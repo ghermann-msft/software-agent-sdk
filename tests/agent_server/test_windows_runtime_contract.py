@@ -233,6 +233,7 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert WINDOWS_PREINSTALLED_ACP_PROVIDERS == tuple(ACP_INSTALL_CATALOG)
     assert "--format json" in dockerfile
     assert "$env:Path = 'C:\\Node;' + $env:Path" in dockerfile
+    assert "--min-release-age=7" in dockerfile
     assert "('--allow-scripts=' + $env:ACP_NPM_ALLOW_SCRIPTS)" in dockerfile
     assert "$binary + '.cmd'" in dockerfile
     assert "ARG POWERSHELL_VERSION=7.7.0" in dockerfile

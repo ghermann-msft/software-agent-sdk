@@ -274,6 +274,7 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:NODE_URL -OutFile C:\node.zip; 
     & C:\Node\npm.cmd install `
         --global `
         --prefix C:\ACP `
+        --min-release-age=7 `
         ('--allow-scripts=' + $env:ACP_NPM_ALLOW_SCRIPTS) `
         $packages; `
     if ($LASTEXITCODE -ne 0) { throw 'Pinned Windows ACP provider installation failed' }; `

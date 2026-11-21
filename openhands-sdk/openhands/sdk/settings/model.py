@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import copy
-import itertools
-import os
-import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -71,6 +68,7 @@ from .acp_providers import (
     ACPProviderInfo,
     default_acp_file_secrets,
     get_acp_provider,
+    prefer_pinned_acp_binary,
 )
 from .metadata import (
     SETTINGS_METADATA_KEY,
@@ -88,7 +86,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-_WINDOWS = os.name == "nt"
 
 
 SettingsValueType = Literal[
@@ -2073,9 +2070,8 @@ class ACPAgentSettings(AgentSettingsBase):
         Raises ``ValueError`` when :attr:`acp_server` is ``'custom'`` but
         no explicit command is set (there is no sensible default to fall back to).
 
-        The result is routed through :meth:`_prefer_pinned_binary`, which swaps
-        an ``npx`` command for the pinned binary when it is on ``PATH`` (a no-op
-        otherwise).
+        The result swaps a matching ``npx`` command for the provider's pinned
+        binary when it is on ``PATH`` (a no-op otherwise).
         """
         if self.acp_command:
             command = list(self.acp_command)
@@ -2091,76 +2087,7 @@ class ACPAgentSettings(AgentSettingsBase):
                     f"No default ACP command for acp_server={self.acp_server!r}"
                 )
             command = list(info.default_command)
-        return self._prefer_pinned_binary(command)
-
-    @staticmethod
-    def _parse_npx_invocation(command: Sequence[str]) -> tuple[str, list[str]] | None:
-        """Parse an ``npx``-style launch command into ``(package, extra_args)``.
-
-        ``["npx", "-y", "@scope/pkg", "--flag"]`` → ``("@scope/pkg", ["--flag"])``,
-        skipping any leading ``npx`` flags such as ``-y`` / ``--yes``. Returns
-        ``None`` when *command* is not an ``npx`` invocation (e.g. an
-        already-resolved binary path), so callers leave it untouched.
-        """
-        if not command or command[0] != "npx":
-            return None
-        # Drop leading npx flags (-y, --yes, ...) to find the package name.
-        rest = list(itertools.dropwhile(lambda arg: arg.startswith("-"), command[1:]))
-        if not rest:
-            return None
-        package, *extra_args = rest
-        return package, extra_args
-
-    @staticmethod
-    def _npm_package_name(package: str) -> str:
-        """Strip any ``@version`` specifier from an npm package spec.
-
-        ``@scope/pkg@1.2.3`` → ``@scope/pkg``; ``pkg@1.2.3`` → ``pkg``; an
-        unversioned spec is returned unchanged. The version separator is the
-        ``@`` *after* the name — for scoped specs that is the second ``@`` (the
-        first introduces the scope), so a leading ``@`` is skipped.
-        """
-        start = 1 if package.startswith("@") else 0
-        at = package.find("@", start)
-        return package[:at] if at != -1 else package
-
-    def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
-        """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
-
-        When *command* is an ``npx`` invocation of this provider's package and
-        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
-        the pinned binary with trailing args like gemini's ``--acp``. Windows
-        uses the resolved absolute path so ``.cmd`` npm shims are launched
-        directly; other platforms preserve the short binary name. Returned
-        unchanged otherwise: no pinned binary (custom server), a
-        non-matching/non-npx command, or the binary not on ``PATH`` (local dev).
-
-        Package matching ignores any ``@version`` suffix: the registry default
-        is version-pinned (so the native fallback can't drift to npm ``latest``),
-        but a client may still send the bare or a differently-pinned package
-        name. In the image the pinned binary stands in for the provider's package
-        regardless of the requested version, so the rewrite compares names only.
-        """
-        info = get_acp_provider(self.acp_server)
-        if info is None or info.binary_name is None:
-            return command
-
-        default_parsed = self._parse_npx_invocation(info.default_command)
-        actual_parsed = self._parse_npx_invocation(command)
-        if default_parsed is None or actual_parsed is None:
-            return command
-
-        default_pkg, _ = default_parsed
-        actual_pkg, extra = actual_parsed
-        same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
-            default_pkg
-        )
-        resolved_binary = shutil.which(info.binary_name)
-        if not same_package or resolved_binary is None:
-            return command
-
-        binary = resolved_binary if _WINDOWS else info.binary_name
-        return [binary, *extra]
+        return prefer_pinned_acp_binary(self.acp_server, command)
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.

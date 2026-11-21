@@ -148,6 +148,7 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
     get_acp_provider,
+    prefer_pinned_acp_binary,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -3378,8 +3379,12 @@ class ACPAgent(AgentBase):
 
         self._strip_conflicting_env(env)
 
-        command = self.acp_command[0]
-        args = list(self.acp_command[1:]) + list(self.acp_args)
+        launch_command = prefer_pinned_acp_binary(
+            self.acp_server,
+            self.acp_command,
+        )
+        command = launch_command[0]
+        args = launch_command[1:] + list(self.acp_args)
         copilot_mcp_config = self._materialize_copilot_stdio_mcp_config(state)
         if copilot_mcp_config is not None:
             args.extend(
@@ -3395,7 +3400,7 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
         launch_provider = self._resolved_provider()
-        packages = _npx_packages(self.acp_command)
+        packages = _npx_packages(launch_command)
         if launch_provider is not None and packages:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
             try:

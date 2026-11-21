@@ -35,6 +35,8 @@ client to every upstream addition.
 
 from __future__ import annotations
 
+import os
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -50,6 +52,9 @@ from openhands.sdk.settings.acp_install_catalog import (
     GEMINI_CLI_VERSION as GEMINI_CLI_VERSION,
     KIMI_CODE_VERSION as KIMI_CODE_VERSION,
 )
+
+
+_WINDOWS = os.name == "nt"
 
 
 class ACPFileSecretSpec(BaseModel):
@@ -270,12 +275,10 @@ class ACPProviderInfo:
     """Pinned, pre-installed CLI binary for this provider (e.g. ``codex-acp``).
 
     The agent-server image installs the ACP CLIs at a fixed version as ``PATH``
-    wrappers. When this binary resolves via :func:`shutil.which`,
-    :meth:`~openhands.sdk.settings.model.ACPAgentSettings.resolve_acp_command`
-    rewrites the ``npx -y <pkg>`` launch command to run it directly (preserving
-    trailing args like gemini's ``--acp``); otherwise the ``npx`` command is
-    used unchanged. ``None`` for providers with no pinned binary (and ``custom``
-    servers); defaulted so positional construction keeps working.
+    wrappers. :func:`prefer_pinned_acp_binary` rewrites matching ``npx``
+    commands to use the installed binary, preserving trailing arguments.
+    ``None`` for providers with no pinned binary (and ``custom`` servers);
+    defaulted so positional construction keeps working.
     """
 
     data_dir_env_var: str | None = None
@@ -602,6 +605,53 @@ def default_acp_file_secrets() -> tuple[ACPFileSecretSpec, ...]:
 def get_acp_provider(key: str) -> ACPProviderInfo | None:
     """Return the :class:`ACPProviderInfo` for ``key``, or ``None`` if unknown."""
     return ACP_PROVIDERS.get(key)
+
+
+def prefer_pinned_acp_binary(
+    provider_key: str | None, command: Sequence[str]
+) -> list[str]:
+    """Use a provider's installed pinned binary for its matching npx command.
+
+    Package matching ignores version suffixes so a command serialized by a
+    control plane running an older SDK still selects the reviewed binary in the
+    runtime image. Non-npx commands, unknown/custom providers, other packages,
+    and environments without the binary retain the original command.
+    """
+    resolved_command = list(command)
+    info = get_acp_provider(provider_key or "")
+    if info is None or info.binary_name is None:
+        return resolved_command
+
+    default_parsed = _parse_npx_invocation(info.default_command)
+    actual_parsed = _parse_npx_invocation(resolved_command)
+    if default_parsed is None or actual_parsed is None:
+        return resolved_command
+
+    default_package, _ = default_parsed
+    actual_package, extra_args = actual_parsed
+    if _npm_package_name(actual_package) != _npm_package_name(default_package):
+        return resolved_command
+
+    resolved_binary = shutil.which(info.binary_name)
+    if resolved_binary is None:
+        return resolved_command
+    binary = resolved_binary if _WINDOWS else info.binary_name
+    return [binary, *extra_args]
+
+
+def _parse_npx_invocation(command: Sequence[str]) -> tuple[str, list[str]] | None:
+    if not command or command[0] != "npx":
+        return None
+    for index, argument in enumerate(command[1:], start=1):
+        if not argument.startswith("-"):
+            return argument, list(command[index + 1 :])
+    return None
+
+
+def _npm_package_name(package: str) -> str:
+    start = 1 if package.startswith("@") else 0
+    version_separator = package.find("@", start)
+    return package[:version_separator] if version_separator != -1 else package
 
 
 def detect_acp_provider_by_agent_name(agent_name: str) -> ACPProviderInfo | None:

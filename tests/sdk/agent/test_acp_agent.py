@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 import openhands.sdk.agent.acp_agent as acp_agent_module
 import openhands.sdk.agent.acp_file_credentials as acp_file_credentials_module
+import openhands.sdk.settings.acp_providers as acp_providers_module
 import openhands.sdk.utils.files as files_module
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -100,6 +101,17 @@ from openhands.sdk.utils.pydantic_secrets import (
     client_context,
 )
 from openhands.sdk.workspace.local import LocalWorkspace
+
+
+_SERIALIZED_COPILOT_COMMAND = [
+    "npx",
+    "-y",
+    "--prefer-offline",
+    "@github/copilot@1.0.109",
+    "--acp",
+    "--stdio",
+    "--no-auto-update",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -11185,3 +11197,86 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+def _spawned_acp_command(tmp_path: Path, agent: ACPAgent) -> tuple[str, ...]:
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    spawn_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    conn = TestACPSessionIdPersistence._make_conn()
+    try:
+        TestACPSessionIdPersistence._patched_start_acp_server(
+            agent,
+            state,
+            conn=conn,
+            spawn_calls=spawn_calls,
+        )
+        ((args, _),) = spawn_calls
+        return args
+    finally:
+        agent.close()
+
+
+@pytest.mark.parametrize(
+    ("windows", "resolved_binary", "expected_executable"),
+    [
+        (False, "/usr/local/bin/copilot", "copilot"),
+        (True, r"C:\Copilot\copilot.exe", r"C:\Copilot\copilot.exe"),
+    ],
+)
+def test_runtime_launch_rewrites_serialized_copilot_npx_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: bool,
+    resolved_binary: str,
+    expected_executable: str,
+) -> None:
+    monkeypatch.setattr(acp_providers_module, "_WINDOWS", windows)
+    monkeypatch.setattr(acp_agent_module, "_WINDOWS", windows)
+    monkeypatch.setattr(
+        acp_providers_module.shutil,
+        "which",
+        lambda command: resolved_binary if command == "copilot" else None,
+    )
+    agent = ACPAgent(
+        acp_server="copilot-cli",
+        acp_command=_SERIALIZED_COPILOT_COMMAND,
+    )
+
+    command = _spawned_acp_command(tmp_path, agent)
+
+    assert command == (
+        expected_executable,
+        "--acp",
+        "--stdio",
+        "--no-auto-update",
+    )
+
+
+def test_runtime_launch_does_not_rewrite_custom_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(acp_providers_module, "_WINDOWS", False)
+    monkeypatch.setattr(acp_agent_module, "_WINDOWS", False)
+    monkeypatch.setattr(
+        acp_providers_module.shutil,
+        "which",
+        lambda command: "/usr/local/bin/copilot" if command == "copilot" else None,
+    )
+
+    async def skip_cache_warm(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ACPAgent, "_warm_npx_cache", skip_cache_warm)
+    agent = ACPAgent(
+        acp_server="custom",
+        acp_command=_SERIALIZED_COPILOT_COMMAND,
+    )
+
+    command = _spawned_acp_command(tmp_path, agent)
+
+    assert command == tuple(_SERIALIZED_COPILOT_COMMAND)

@@ -7,7 +7,7 @@ import pytest
 from deprecation import DeprecatedWarning
 from pydantic import SecretStr, ValidationError
 
-import openhands.sdk.settings.model as settings_model_module
+import openhands.sdk.settings.acp_providers as acp_providers_module
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
     LLM,
@@ -2125,7 +2125,7 @@ def test_copilot_cli_resolves_from_native_windows_path(
         return None
 
     monkeypatch.setattr(shutil, "which", fake_which)
-    monkeypatch.setattr(settings_model_module, "_WINDOWS", True)
+    monkeypatch.setattr(acp_providers_module, "_WINDOWS", True)
 
     assert ACPAgentSettings(acp_server="copilot-cli").resolve_acp_command() == [
         r"C:\Copilot\copilot.exe",
@@ -2143,7 +2143,7 @@ def test_npm_acp_provider_resolves_windows_cmd_shim(
         "which",
         lambda name: rf"C:\ACP\{name}.cmd" if name == "codex-acp" else None,
     )
-    monkeypatch.setattr(settings_model_module, "_WINDOWS", True)
+    monkeypatch.setattr(acp_providers_module, "_WINDOWS", True)
 
     assert ACPAgentSettings(acp_server="codex").resolve_acp_command() == [
         r"C:\ACP\codex-acp.cmd"

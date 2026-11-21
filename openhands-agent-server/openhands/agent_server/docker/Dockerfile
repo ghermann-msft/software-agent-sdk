@@ -9,6 +9,12 @@ ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
 ARG NPM_VERSION=12.2.2
+# Image builds consume immutable GitHub release binaries because a CLI release
+# can precede its npm publication. General npx fallback pins remain independent.
+ARG COPILOT_CLI_VERSION=1.0.114
+ARG COPILOT_CLI_LINUX_X64_SHA256=b91a96f2257297cfb67ed6784a2a658609a6b8c2ee2ded18af9c9abe8cc790ae
+ARG COPILOT_CLI_LINUX_ARM64_SHA256=a204154d4522a7c3aa73a65ba598e432f6aafe37d5fa31cf853163a27d98018e
+ARG COPILOT_CLI_LICENSE_SHA256=c694e2d9b3f3bb40704ca9bdc823dc90269999ab4c013dfd8a52c407046074b4
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -268,6 +274,10 @@ RUN test -x /agent-server/dist/openhands-agent-server
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
 ARG NPM_VERSION
+ARG COPILOT_CLI_VERSION
+ARG COPILOT_CLI_LINUX_X64_SHA256
+ARG COPILOT_CLI_LINUX_ARM64_SHA256
+ARG COPILOT_CLI_LICENSE_SHA256
 ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
@@ -291,6 +301,13 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
+    NPM_PACKAGES=; \
+    for package in $PACKAGES; do \
+      case "$package" in \
+        @github/copilot@*) ;; \
+        *) NPM_PACKAGES="$NPM_PACKAGES $package";; \
+      esac; \
+    done; \
     # python:3.13-bookworm ships apt 2.6.1, which is exposed to CVE-2026-109518
     # over HTTP; it ships a CA bundle, so fetch from deb.debian.org over HTTPS.
     sed -i 's#http://deb.debian.org/#https://deb.debian.org/#' \
@@ -306,8 +323,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75; COPILOT_SHA256="$COPILOT_CLI_LINUX_X64_SHA256";; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8; COPILOT_SHA256="$COPILOT_CLI_LINUX_ARM64_SHA256";; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
     NODE_TARBALL="/tmp/node-v24.22.2-linux-${NARCH}.tar.xz"; \
@@ -318,12 +335,26 @@ RUN set -eux; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
+    if [ -n "$NPM_PACKAGES" ]; then \
+      PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $NPM_PACKAGES; \
+    fi; \
     if printf '%s\n' $WRAPPER_BINS | grep -qx copilot; then \
-      test -f "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md"; \
       mkdir -p "$ACP_NODE_DIR/licenses"; \
-      cp "$ACP_NODE_DIR/lib/node_modules/@github/copilot/LICENSE.md" \
-        "$ACP_NODE_DIR/licenses/GitHub-Copilot-CLI-LICENSE.md"; \
+      COPILOT_TARBALL="/tmp/copilot-linux-${NARCH}.tar.gz"; \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+        "https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/copilot-linux-${NARCH}.tar.gz" \
+        -o "$COPILOT_TARBALL"; \
+      echo "$COPILOT_SHA256  $COPILOT_TARBALL" | sha256sum -c -; \
+      tar -xzf "$COPILOT_TARBALL" -C /tmp; \
+      install -m 0755 /tmp/copilot "$ACP_NODE_DIR/bin/copilot"; \
+      rm -f "$COPILOT_TARBALL" /tmp/copilot; \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+        "https://raw.githubusercontent.com/github/copilot-cli/v${COPILOT_CLI_VERSION}/LICENSE.md" \
+        -o "$ACP_NODE_DIR/licenses/GitHub-Copilot-CLI-LICENSE.md"; \
+      echo "$COPILOT_CLI_LICENSE_SHA256  $ACP_NODE_DIR/licenses/GitHub-Copilot-CLI-LICENSE.md" \
+        | sha256sum -c -; \
+      "$ACP_NODE_DIR/bin/copilot" --no-auto-update --version \
+        | grep -F "$COPILOT_CLI_VERSION"; \
       PATH="$ACP_NODE_DIR/bin:$PATH" \
         "$ACP_NODE_DIR/bin/copilot" --no-auto-update help acp \
         | grep -F 'talks to it over stdio'; \

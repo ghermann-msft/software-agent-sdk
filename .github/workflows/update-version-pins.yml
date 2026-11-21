@@ -221,6 +221,7 @@ jobs:
         env:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
             CATALOG: openhands-sdk/openhands/sdk/settings/acp_install_catalog.py
+            LINUX_DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile
             WINDOWS_DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile.windows
             TYPESCRIPT_REGISTRY: clients/typescript/src/models/acp-providers.json
         steps:
@@ -231,6 +232,7 @@ jobs:
               run: |
                   python .github/scripts/update_copilot_cli_pin.py \
                     --catalog "$CATALOG" \
+                    --linux-dockerfile "$LINUX_DOCKERFILE" \
                     --windows-dockerfile "$WINDOWS_DOCKERFILE" \
                     --typescript-registry "$TYPESCRIPT_REGISTRY"
             - name: Smoke test pinned ACP executable
@@ -265,7 +267,7 @@ jobs:
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git checkout -b "$BRANCH"
-                  git add "$CATALOG" "$WINDOWS_DOCKERFILE" "$TYPESCRIPT_REGISTRY"
+                  git add "$CATALOG" "$LINUX_DOCKERFILE" "$WINDOWS_DOCKERFILE" "$TYPESCRIPT_REGISTRY"
                   git commit -m "chore(agent-server): update Copilot CLI to $VERSION" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"

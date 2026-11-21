@@ -120,10 +120,13 @@ ARG NODE_URL=https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip
 ARG NODE_SHA256=ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2
 ARG NPM_VERSION=12.2.2
 ARG ACP_NPM_ALLOW_SCRIPTS=@moonshot-ai/kimi-code,opencode-ai,@github/keytar,node-pty,@google/genai,protobufjs
-ARG COPILOT_CLI_VERSION=1.0.109
-ARG COPILOT_CLI_URL=https://github.com/github/copilot-cli/releases/download/v1.0.109/copilot-win32-x64.zip
-ARG COPILOT_CLI_SHA256=794c16bcc5535cdf478598d6cf4af3228daec3b7801bfa3540c56b8d3524beee
-ARG COPILOT_CLI_LICENSE_URL=https://raw.githubusercontent.com/github/copilot-cli/v1.0.109/LICENSE.md
+# Image builds consume the immutable GitHub release binary because a CLI
+# release can precede its npm publication. General npx fallback pins remain
+# independent.
+ARG COPILOT_CLI_VERSION=1.0.114
+ARG COPILOT_CLI_URL=https://github.com/github/copilot-cli/releases/download/v1.0.114/copilot-win32-x64.zip
+ARG COPILOT_CLI_SHA256=be5af88c044842949560535b083c47e0c2b41904769cca599ee2cbf937dc9eed
+ARG COPILOT_CLI_LICENSE_URL=https://raw.githubusercontent.com/github/copilot-cli/v1.0.114/LICENSE.md
 ARG COPILOT_CLI_LICENSE_SHA256=c694e2d9b3f3bb40704ca9bdc823dc90269999ab4c013dfd8a52c407046074b4
 ARG POWERSHELL_VERSION=7.7.0
 ARG POWERSHELL_URL=https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip

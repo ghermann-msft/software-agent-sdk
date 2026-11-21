@@ -304,20 +304,42 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
             )
 
 
-def test_copilot_cli_pin_matches_linux_windows_and_typescript_surfaces() -> None:
+def test_copilot_cli_image_binary_and_npm_fallback_pins() -> None:
     spec = ACP_INSTALL_CATALOG["copilot-cli"]
     assert spec.packages[0].name == "@github/copilot"
     assert spec.packages[0].version == COPILOT_CLI_VERSION
     assert spec.trailing_args == ("--acp", "--stdio", "--no-auto-update")
 
     linux_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    linux_image_version = re.search(
+        r"(?m)^ARG COPILOT_CLI_VERSION=(\d+\.\d+\.\d+)$", linux_text
+    )
+    assert linux_image_version
+    assert linux_image_version.group(1) == "1.0.114"
+    assert "copilot-linux-${NARCH}.tar.gz" in linux_text
+    assert (
+        "COPILOT_CLI_LINUX_X64_SHA256="
+        "b91a96f2257297cfb67ed6784a2a658609a6b8c2ee2ded18af9c9abe8cc790ae"
+        in linux_text
+    )
+    assert (
+        "COPILOT_CLI_LINUX_ARM64_SHA256="
+        "a204154d4522a7c3aa73a65ba598e432f6aafe37d5fa31cf853163a27d98018e"
+        in linux_text
+    )
+    assert "@github/copilot@*) ;;" in linux_text
     assert "GitHub-Copilot-CLI-LICENSE.md" in linux_text
     assert '"$ACP_NODE_DIR/bin/copilot" --no-auto-update help acp' in linux_text
 
     windows_text = WINDOWS_DOCKERFILE.read_text(encoding="utf-8")
-    assert f"ARG COPILOT_CLI_VERSION={COPILOT_CLI_VERSION}" in windows_text
-    assert f"/v{COPILOT_CLI_VERSION}/copilot-win32-x64.zip" in windows_text
-    assert f"/v{COPILOT_CLI_VERSION}/LICENSE.md" in windows_text
+    assert "ARG COPILOT_CLI_VERSION=1.0.114" in windows_text
+    assert "/v1.0.114/copilot-win32-x64.zip" in windows_text
+    assert (
+        "ARG COPILOT_CLI_SHA256="
+        "be5af88c044842949560535b083c47e0c2b41904769cca599ee2cbf937dc9eed"
+        in windows_text
+    )
+    assert "/v1.0.114/LICENSE.md" in windows_text
 
     typescript_text = TYPESCRIPT_ACP_REGISTRY.read_text(encoding="utf-8")
     assert f'"@github/copilot@{COPILOT_CLI_VERSION}"' in typescript_text

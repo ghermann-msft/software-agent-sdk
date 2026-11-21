@@ -14,6 +14,8 @@ SPEC.loader.exec_module(updater)
 
 NOW = datetime(2026, 11, 17, tzinfo=UTC)
 WINDOWS_SHA = "a" * 64
+LINUX_X64_SHA = "b" * 64
+LINUX_ARM64_SHA = "c" * 64
 LICENSE_BYTES = b"Copilot CLI license"
 
 
@@ -59,12 +61,25 @@ def _npm_metadata() -> dict:
     }
 
 
-def _files(directory: str) -> tuple[Path, Path, Path]:
+def _files(directory: str) -> tuple[Path, Path, Path, Path]:
     root = Path(directory)
     catalog = root / "catalog.py"
+    linux_dockerfile = root / "Dockerfile"
     dockerfile = root / "Dockerfile.windows"
     registry = root / "acp-providers.json"
     catalog.write_text('COPILOT_CLI_VERSION = "1.0.109"\n', encoding="utf-8")
+    linux_dockerfile.write_text(
+        "\n".join(
+            (
+                "ARG COPILOT_CLI_VERSION=1.0.109",
+                f"ARG COPILOT_CLI_LINUX_X64_SHA256={'f' * 64}",
+                f"ARG COPILOT_CLI_LINUX_ARM64_SHA256={'f' * 64}",
+                f"ARG COPILOT_CLI_LICENSE_SHA256={'e' * 64}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
     dockerfile.write_text(
         "\n".join(
             (
@@ -82,18 +97,19 @@ def _files(directory: str) -> tuple[Path, Path, Path]:
         '{"default_command":["@github/copilot@1.0.109"]}\n',
         encoding="utf-8",
     )
-    return catalog, dockerfile, registry
+    return catalog, linux_dockerfile, dockerfile, registry
 
 
-def test_updates_catalog_windows_asset_license_and_typescript_registry() -> None:
+def test_updates_catalog_image_assets_license_and_typescript_registry() -> None:
     releases = [
         _release("1.0.110", "2026-11-09T00:00:00Z"),
         _release("1.0.111", "2026-11-16T00:00:00Z"),
     ]
     with TemporaryDirectory() as directory:
-        catalog, dockerfile, registry = _files(directory)
+        catalog, linux_dockerfile, dockerfile, registry = _files(directory)
         selected = updater.update_pins(
             catalog,
+            linux_dockerfile,
             dockerfile,
             registry,
             releases,
@@ -104,6 +120,13 @@ def test_updates_catalog_windows_asset_license_and_typescript_registry() -> None
 
         assert selected == "1.0.110"
         assert 'COPILOT_CLI_VERSION = "1.0.110"' in catalog.read_text()
+        linux_text = linux_dockerfile.read_text()
+        assert "ARG COPILOT_CLI_VERSION=1.0.110" in linux_text
+        assert f"ARG COPILOT_CLI_LINUX_X64_SHA256={LINUX_X64_SHA}" in linux_text
+        assert (
+            f"ARG COPILOT_CLI_LINUX_ARM64_SHA256={LINUX_ARM64_SHA}" in linux_text
+        )
+        assert updater.hashlib.sha256(LICENSE_BYTES).hexdigest() in linux_text
         docker_text = dockerfile.read_text()
         assert "ARG COPILOT_CLI_VERSION=1.0.110" in docker_text
         assert f"ARG COPILOT_CLI_SHA256={WINDOWS_SHA}" in docker_text
@@ -116,10 +139,11 @@ def test_requires_both_github_and_npm_to_complete_observation_period() -> None:
     metadata = _npm_metadata()
     metadata["time"]["1.0.110"] = "2026-11-16T00:00:00Z"
     with TemporaryDirectory() as directory:
-        catalog, dockerfile, registry = _files(directory)
+        catalog, linux_dockerfile, dockerfile, registry = _files(directory)
         assert (
             updater.update_pins(
                 catalog,
+                linux_dockerfile,
                 dockerfile,
                 registry,
                 releases,
@@ -136,11 +160,17 @@ def test_missing_required_release_asset_fails_before_writing() -> None:
     release = _release("1.0.110", "2026-11-01T00:00:00Z")
     release["assets"] = release["assets"][:-1]
     with TemporaryDirectory() as directory:
-        catalog, dockerfile, registry = _files(directory)
-        before = (catalog.read_text(), dockerfile.read_text(), registry.read_text())
+        catalog, linux_dockerfile, dockerfile, registry = _files(directory)
+        before = (
+            catalog.read_text(),
+            linux_dockerfile.read_text(),
+            dockerfile.read_text(),
+            registry.read_text(),
+        )
         try:
             updater.update_pins(
                 catalog,
+                linux_dockerfile,
                 dockerfile,
                 registry,
                 [release],
@@ -154,6 +184,7 @@ def test_missing_required_release_asset_fails_before_writing() -> None:
             raise AssertionError("release with a missing Windows asset was accepted")
         assert before == (
             catalog.read_text(),
+            linux_dockerfile.read_text(),
             dockerfile.read_text(),
             registry.read_text(),
         )

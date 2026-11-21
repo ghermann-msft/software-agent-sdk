@@ -25,6 +25,12 @@ DOCKER_LICENSE_URL = re.compile(r"(?m)^ARG COPILOT_CLI_LICENSE_URL=(\S+)$")
 DOCKER_LICENSE_SHA256 = re.compile(
     r"(?m)^ARG COPILOT_CLI_LICENSE_SHA256=([0-9a-f]{64})$"
 )
+LINUX_X64_SHA256 = re.compile(
+    r"(?m)^ARG COPILOT_CLI_LINUX_X64_SHA256=([0-9a-f]{64})$"
+)
+LINUX_ARM64_SHA256 = re.compile(
+    r"(?m)^ARG COPILOT_CLI_LINUX_ARM64_SHA256=([0-9a-f]{64})$"
+)
 TS_PACKAGE = re.compile(r"@github/copilot@(\d+\.\d+\.\d+)")
 REQUIRED_ASSETS = (
     "copilot-linux-x64.tar.gz",
@@ -99,6 +105,7 @@ def _replace_once(pattern: re.Pattern[str], replacement: str, text: str) -> str:
 
 def update_pins(
     catalog: Path,
+    linux_dockerfile: Path,
     windows_dockerfile: Path,
     typescript_registry: Path,
     releases: list[dict],
@@ -118,6 +125,12 @@ def update_pins(
     selected_version = str(selected["tag_name"]).removeprefix("v")
     assets = _release_assets(selected)
     windows_asset = assets["copilot-win32-x64.zip"]
+    linux_x64_sha256 = str(
+        assets["copilot-linux-x64.tar.gz"]["digest"]
+    ).removeprefix("sha256:")
+    linux_arm64_sha256 = str(
+        assets["copilot-linux-arm64.tar.gz"]["digest"]
+    ).removeprefix("sha256:")
     windows_url = str(windows_asset["browser_download_url"])
     windows_sha256 = str(windows_asset["digest"]).removeprefix("sha256:")
     license_url = (
@@ -126,35 +139,58 @@ def update_pins(
     )
     license_sha256 = hashlib.sha256(fetch_bytes(license_url)).hexdigest()
 
-    docker_text = windows_dockerfile.read_text(encoding="utf-8")
+    linux_docker_text = linux_dockerfile.read_text(encoding="utf-8")
+    windows_docker_text = windows_dockerfile.read_text(encoding="utf-8")
     registry_text = typescript_registry.read_text(encoding="utf-8")
     updated_catalog = _replace_once(
         CATALOG_VERSION,
         f'COPILOT_CLI_VERSION = "{selected_version}"',
         catalog_text,
     )
-    updated_docker = _replace_once(
+    updated_linux_docker = _replace_once(
         DOCKER_VERSION,
         f"ARG COPILOT_CLI_VERSION={selected_version}",
-        docker_text,
+        linux_docker_text,
     )
-    updated_docker = _replace_once(
-        DOCKER_URL, f"ARG COPILOT_CLI_URL={windows_url}", updated_docker
+    updated_linux_docker = _replace_once(
+        LINUX_X64_SHA256,
+        f"ARG COPILOT_CLI_LINUX_X64_SHA256={linux_x64_sha256}",
+        updated_linux_docker,
     )
-    updated_docker = _replace_once(
-        DOCKER_SHA256,
-        f"ARG COPILOT_CLI_SHA256={windows_sha256}",
-        updated_docker,
+    updated_linux_docker = _replace_once(
+        LINUX_ARM64_SHA256,
+        f"ARG COPILOT_CLI_LINUX_ARM64_SHA256={linux_arm64_sha256}",
+        updated_linux_docker,
     )
-    updated_docker = _replace_once(
-        DOCKER_LICENSE_URL,
-        f"ARG COPILOT_CLI_LICENSE_URL={license_url}",
-        updated_docker,
-    )
-    updated_docker = _replace_once(
+    updated_linux_docker = _replace_once(
         DOCKER_LICENSE_SHA256,
         f"ARG COPILOT_CLI_LICENSE_SHA256={license_sha256}",
-        updated_docker,
+        updated_linux_docker,
+    )
+    updated_windows_docker = _replace_once(
+        DOCKER_VERSION,
+        f"ARG COPILOT_CLI_VERSION={selected_version}",
+        windows_docker_text,
+    )
+    updated_windows_docker = _replace_once(
+        DOCKER_URL,
+        f"ARG COPILOT_CLI_URL={windows_url}",
+        updated_windows_docker,
+    )
+    updated_windows_docker = _replace_once(
+        DOCKER_SHA256,
+        f"ARG COPILOT_CLI_SHA256={windows_sha256}",
+        updated_windows_docker,
+    )
+    updated_windows_docker = _replace_once(
+        DOCKER_LICENSE_URL,
+        f"ARG COPILOT_CLI_LICENSE_URL={license_url}",
+        updated_windows_docker,
+    )
+    updated_windows_docker = _replace_once(
+        DOCKER_LICENSE_SHA256,
+        f"ARG COPILOT_CLI_LICENSE_SHA256={license_sha256}",
+        updated_windows_docker,
     )
     updated_registry = _replace_once(
         TS_PACKAGE,
@@ -163,7 +199,8 @@ def update_pins(
     )
 
     catalog.write_text(updated_catalog, encoding="utf-8")
-    windows_dockerfile.write_text(updated_docker, encoding="utf-8")
+    linux_dockerfile.write_text(updated_linux_docker, encoding="utf-8")
+    windows_dockerfile.write_text(updated_windows_docker, encoding="utf-8")
     typescript_registry.write_text(updated_registry, encoding="utf-8")
     return selected_version
 
@@ -185,6 +222,7 @@ def _fetch_bytes(url: str) -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, required=True)
+    parser.add_argument("--linux-dockerfile", type=Path, required=True)
     parser.add_argument("--windows-dockerfile", type=Path, required=True)
     parser.add_argument("--typescript-registry", type=Path, required=True)
     args = parser.parse_args()
@@ -195,6 +233,7 @@ def main() -> int:
     print(
         update_pins(
             args.catalog,
+            args.linux_dockerfile,
             args.windows_dockerfile,
             args.typescript_registry,
             releases,

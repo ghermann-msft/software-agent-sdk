@@ -158,6 +158,17 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
         "ee5e96d58134957443ded04be132e2e19240c534d7602e3ab8fd5adc5156014a"
         in dockerfile
     )
+    assert (
+        "ARG DXC_LICENSE_URL=https://raw.githubusercontent.com/microsoft/"
+        "DirectXShaderCompiler/v1.6.2104/LICENSE.TXT" in dockerfile
+    )
+    assert (
+        "ARG DXC_LICENSE_SHA256="
+        "9c9393bb14872aca75124c65558174da9cf2aa13f69be4aaffbfb96b29de1910"
+        in dockerfile
+    )
+    assert "C:\\dxc\\LICENSE.TXT" not in dockerfile
+    assert "throw 'DXC license SHA256 verification failed'" in dockerfile
     assert "ARG VC_REDIST_VERSION=14.44.35211.0" in dockerfile
     assert (
         "ARG VC_REDIST_SHA256="

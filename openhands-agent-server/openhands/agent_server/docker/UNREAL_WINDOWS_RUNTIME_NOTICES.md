@@ -42,7 +42,15 @@ release `v1.6.2104`, published April 20, 2021:
 - SHA-256:
   `ee5e96d58134957443ded04be132e2e19240c534d7602e3ab8fd5adc5156014a`
 
-The archive's license is copied to
+The release archive contains only the compiler binaries, headers, and import
+library. The matching source tag's license is downloaded separately:
+
+- URL:
+  `https://raw.githubusercontent.com/microsoft/DirectXShaderCompiler/v1.6.2104/LICENSE.TXT`
+- SHA-256:
+  `9c9393bb14872aca75124c65558174da9cf2aa13f69be4aaffbfb96b29de1910`
+
+The verified license is copied to
 `C:\AgentServer\licenses\DirectXShaderCompiler-LICENSE.txt`.
 
 ## Python and Azure tools

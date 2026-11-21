@@ -13,6 +13,8 @@ ARG DIRECTX_REDIST_URL=https://download.microsoft.com/download/8/4/A/84A35BF1-DA
 ARG DIRECTX_REDIST_SHA256=053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b
 ARG DXC_URL=https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.6.2104/dxc_2021_04-20.zip
 ARG DXC_SHA256=ee5e96d58134957443ded04be132e2e19240c534d7602e3ab8fd5adc5156014a
+ARG DXC_LICENSE_URL=https://raw.githubusercontent.com/microsoft/DirectXShaderCompiler/v1.6.2104/LICENSE.TXT
+ARG DXC_LICENSE_SHA256=9c9393bb14872aca75124c65558174da9cf2aa13f69be4aaffbfb96b29de1910
 ARG UNREAL_VERSION_SPECIFIC_DLLS=
 
 RUN New-Item -ItemType Directory -Force C:\UnrealRuntime, C:\UnrealRuntimeLicenses | Out-Null; `
@@ -74,7 +76,10 @@ RUN New-Item -ItemType Directory -Force C:\UnrealRuntime, C:\UnrealRuntimeLicens
     }; `
     Expand-Archive C:\dxc.zip -DestinationPath C:\dxc; `
     Copy-Item C:\dxc\bin\x64\dxcompiler.dll, C:\dxc\bin\x64\dxil.dll C:\UnrealRuntime; `
-    Copy-Item C:\dxc\LICENSE.TXT C:\UnrealRuntimeLicenses\DirectXShaderCompiler-LICENSE.txt; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:DXC_LICENSE_URL -OutFile C:\UnrealRuntimeLicenses\DirectXShaderCompiler-LICENSE.txt; `
+    if ((Get-FileHash C:\UnrealRuntimeLicenses\DirectXShaderCompiler-LICENSE.txt -Algorithm SHA256).Hash -ne $env:DXC_LICENSE_SHA256) { `
+        throw 'DXC license SHA256 verification failed' `
+    }; `
     Remove-Item C:\dxc.zip, C:\dxc -Recurse -Force
 
 FROM ${PYTHON_BASE} AS builder

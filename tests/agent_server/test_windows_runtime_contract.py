@@ -267,6 +267,18 @@ def test_windows_dockerfile_declares_immutable_interface() -> None:
     assert "C:\\AzureCLI\\bin\\az.cmd version --output json" in dockerfile
     assert "C:\\AzCopy\\azcopy.exe --version" in dockerfile
     assert "COPY --from=builder C:\\Python C:\\Python" in dockerfile
+    assert (
+        "COPY --from=unreal-runtime-files C:\\UnrealRuntime\\ C:\\UnrealRuntime\\"
+        in dockerfile
+    )
+    assert (
+        "COPY --from=unreal-runtime-files C:\\UnrealRuntime\\ "
+        "C:\\Windows\\System32\\" not in dockerfile
+    )
+    assert "if (-not (Test-Path $destination))" in dockerfile
+    assert (
+        "throw ('Unreal runtime DLL is missing: ' + $runtimeDll.Name)" in dockerfile
+    )
     for dll in (
         "mfplat.dll",
         "XInput1_4.dll",

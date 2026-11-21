@@ -81,7 +81,9 @@ without granting write access to the executables. Browser and VSCode
 capabilities are intentionally absent from this first minimal slice.
 
 The image also contains the Windows multimedia, legacy DirectX, DXC/DXR, and
-Visual C++ runtime files required by Unreal Engine Windows applications. Before
+Visual C++ runtime files required by Unreal Engine Windows applications. The
+image preserves DLLs already supplied by Windows Server Core and installs only
+the missing runtime files from the matching full Windows Server image. Before
 the Agent Server starts, its existing executable runs the configured GPU
 bootstrap script. The script copies NVIDIA or AMD user-mode API DLLs from
 `HostDriverStore` into the writable, image-local `C:\AgentServer\gpu` directory

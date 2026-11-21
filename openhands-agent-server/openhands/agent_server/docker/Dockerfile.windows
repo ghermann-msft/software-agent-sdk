@@ -171,10 +171,23 @@ RUN Invoke-WebRequest -UseBasicParsing -Uri $env:MINGIT_URL -OutFile C:\MinGit.z
 
 COPY --from=builder C:\src\acp-install-plan.json C:\acp-install-plan.json
 COPY --from=builder C:\Python C:\Python
-COPY --from=unreal-runtime-files C:\UnrealRuntime\ C:\Windows\System32\
+COPY --from=unreal-runtime-files C:\UnrealRuntime\ C:\UnrealRuntime\
 COPY --from=unreal-runtime-files C:\UnrealRuntimeLicenses\ C:\AgentServer\licenses\
 
-RUN $pythonVersion = & C:\Python\python.exe --version; `
+RUN $runtimeDlls = Get-ChildItem C:\UnrealRuntime -File; `
+    foreach ($runtimeDll in $runtimeDlls) { `
+        $destination = Join-Path C:\Windows\System32 $runtimeDll.Name; `
+        if (-not (Test-Path $destination)) { `
+            Copy-Item $runtimeDll.FullName $destination `
+        } `
+    }; `
+    foreach ($runtimeDll in $runtimeDlls) { `
+        if (-not (Test-Path (Join-Path C:\Windows\System32 $runtimeDll.Name))) { `
+            throw ('Unreal runtime DLL is missing: ' + $runtimeDll.Name) `
+        } `
+    }; `
+    Remove-Item C:\UnrealRuntime -Recurse -Force; `
+    $pythonVersion = & C:\Python\python.exe --version; `
     if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne ('Python ' + $env:PYTHON_VERSION)) { `
         throw ('Unexpected Python version: ' + $pythonVersion) `
     }; `
